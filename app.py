@@ -24,17 +24,18 @@ class Trabajador:
             fin_ciclo = inicio + relativedelta(years=1) - datetime.timedelta(days=1)
             goce_hasta = fin_ciclo + relativedelta(years=1)
             acum_hasta = goce_hasta + relativedelta(years=1)
+            dias_tomados = sum(v["N° Días"] for v in self.vacaciones if v["Periodo"]["Inicio Ciclo"] == inicio)
             periodos.append({
                 "Inicio Ciclo": inicio,
                 "Fin Ciclo": fin_ciclo,
                 "Goce Hasta": goce_hasta,
                 "Acumulable Hasta": acum_hasta,
-                "Dias Tomados": 0
+                "Dias Tomados": dias_tomados
             })
             inicio = inicio + relativedelta(years=1)
         return periodos
 
-    def registrar_vacaciones(self, periodo_idx, fecha_inicio, dias, documento, mad, observaciones="", fraccionamiento=False):
+    def registrar_vacaciones(self, periodo, fecha_inicio, dias, documento, mad, observaciones="", fraccionamiento=False):
         fecha_inicio = datetime.datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
         fecha_fin = fecha_inicio + datetime.timedelta(days=dias)
 
@@ -42,18 +43,12 @@ class Trabajador:
         if dias < 7 and not fraccionamiento:
             return {"Error": "El mínimo permitido sin acuerdo de fraccionamiento es 7 días continuos."}
 
-        periodos = self.calcular_periodos()
-        if periodo_idx >= len(periodos):
-            return {"Error": "Periodo inválido."}
-        periodo = periodos[periodo_idx]
-
         # Validar acumulación de días
-        dias_tomados = sum(v["N° Días"] for v in self.vacaciones if v["Periodo"] == periodo_idx)
-        if dias_tomados + dias > 30:
+        if periodo["Dias Tomados"] + dias > 30:
             return {"Error": "Ya se han tomado 30 días en este periodo, no puede registrar más."}
 
         registro = {
-            "Periodo": periodo_idx,
+            "Periodo": periodo,
             "Fecha Inicio": fecha_inicio,
             "Fecha Fin": fecha_fin,
             "N° Días": dias,
@@ -64,28 +59,6 @@ class Trabajador:
         }
         self.vacaciones.append(registro)
         return registro
-
-    def registrar_solicitud(self, descripcion, dias, periodo_idx, fraccionamiento=False):
-        if dias < 7 and not fraccionamiento:
-            return {"Error": "La solicitud debe ser mínimo de 7 días continuos o tener acuerdo de fraccionamiento."}
-        solicitud = {"Fecha": datetime.date.today(), "Descripcion": descripcion, "Días": dias, "Periodo": periodo_idx, "Fraccionamiento": fraccionamiento}
-        self.solicitudes.append(solicitud)
-        return solicitud
-
-    def registrar_memorando(self, descripcion, dias, periodo_idx, fraccionamiento=False):
-        if dias < 7 and not fraccionamiento:
-            return {"Error": "El memorando debe respetar mínimo 7 días continuos o tener acuerdo de fraccionamiento."}
-        memorando = {"Fecha": datetime.date.today(), "Descripcion": descripcion, "Días": dias, "Periodo": periodo_idx, "Fraccionamiento": fraccionamiento}
-        self.memorandos.append(memorando)
-        return memorando
-
-    def mostrar_historial(self):
-        return {
-            "Vacaciones": self.vacaciones,
-            "Solicitudes": self.solicitudes,
-            "Memorandos": self.memorandos,
-            "Periodos": self.calcular_periodos()
-        }
 
 # --- Interfaz Streamlit ---
 st.set_page_config(page_title="Gestión de Vacaciones", layout="wide")
@@ -98,8 +71,6 @@ if "trabajadores" not in st.session_state:
 menu = st.sidebar.radio("Menú", [
     "Registrar Trabajador",
     "Registrar Vacaciones",
-    "Solicitudes",
-    "Memorandos",
     "Dashboard",
     "Reporte de Trabajadores"
 ])
@@ -125,7 +96,7 @@ elif menu == "Registrar Vacaciones":
         nombre = st.selectbox("Seleccione trabajador", list(st.session_state["trabajadores"].keys()))
         trabajador = st.session_state["trabajadores"][nombre]
         periodos = trabajador.calcular_periodos()
-        periodo_idx = st.selectbox("Seleccione periodo", range(len(periodos)), format_func=lambda i: f"{periodos[i]['Inicio Ciclo']} - {periodos[i]['Fin Ciclo']}")
+        periodo = st.selectbox("Seleccione periodo", periodos, format_func=lambda p: f"{p['Inicio Ciclo']} - {p['Fin Ciclo']} (Tomados: {p['Dias Tomados']} días)")
         fecha_inicio = st.date_input("Fecha Inicio de Vacaciones")
         dias = st.number_input("N° de Días", min_value=1, max_value=30, value=7)
         documento = st.text_input("Documento")
@@ -134,42 +105,8 @@ elif menu == "Registrar Vacaciones":
         fraccionamiento = st.checkbox("¿Hay acuerdo de fraccionamiento?")
 
         if st.button("Guardar Vacaciones"):
-            registro = trabajador.registrar_vacaciones(periodo_idx, fecha_inicio.strftime("%Y-%m-%d"), dias, documento, mad, observaciones, fraccionamiento)
+            registro = trabajador.registrar_vacaciones(periodo, fecha_inicio.strftime("%Y-%m-%d"), dias, documento, mad, observaciones, fraccionamiento)
             st.write(registro)
-    else:
-        st.warning("Primero registre un trabajador.")
-
-# Solicitudes
-elif menu == "Solicitudes":
-    st.header("Registrar Solicitud")
-    if st.session_state["trabajadores"]:
-        nombre = st.selectbox("Seleccione trabajador", list(st.session_state["trabajadores"].keys()))
-        trabajador = st.session_state["trabajadores"][nombre]
-        periodos = trabajador.calcular_periodos()
-        periodo_idx = st.selectbox("Seleccione periodo", range(len(periodos)), format_func=lambda i: f"{periodos[i]['Inicio Ciclo']} - {periodos[i]['Fin Ciclo']}")
-        solicitud_desc = st.text_area("Descripción de la solicitud")
-        dias = st.number_input("N° de Días solicitados", min_value=1, max_value=30, value=7)
-        fraccionamiento = st.checkbox("¿Hay acuerdo de fraccionamiento?")
-        if st.button("Guardar Solicitud"):
-            sol = trabajador.registrar_solicitud(solicitud_desc, dias, periodo_idx, fraccionamiento)
-            st.write(sol)
-    else:
-        st.warning("Primero registre un trabajador.")
-
-# Memorandos
-elif menu == "Memorandos":
-    st.header("Registrar Memorando")
-    if st.session_state["trabajadores"]:
-        nombre = st.selectbox("Seleccione trabajador", list(st.session_state["trabajadores"].keys()))
-        trabajador = st.session_state["trabajadores"][nombre]
-        periodos = trabajador.calcular_periodos()
-        periodo_idx = st.selectbox("Seleccione periodo", range(len(periodos)), format_func=lambda i: f"{periodos[i]['Inicio Ciclo']} - {periodos[i]['Fin Ciclo']}")
-        memorando_desc = st.text_area("Descripción del memorando")
-        dias = st.number_input("N° de Días aprobados", min_value=1, max_value=30, value=30)
-        fraccionamiento = st.checkbox("¿Hay acuerdo de fraccionamiento?")
-        if st.button("Guardar Memorando"):
-            mem = trabajador.registrar_memorando(memorando_desc, dias, periodo_idx, fraccionamiento)
-            st.write(mem)
     else:
         st.warning("Primero registre un trabajador.")
 
@@ -181,4 +118,70 @@ elif menu == "Dashboard":
         vencimientos = []
         for nombre, trab in st.session_state["trabajadores"].items():
             for vac in trab.vacaciones:
-                periodo = trab.cal
+                data.append({
+                    "Trabajador": nombre,
+                    "Periodo": f"{vac['Periodo']['Inicio Ciclo']} - {vac['Periodo']['Fin Ciclo']}",
+                    "Inicio": vac["Fecha Inicio"],
+                    "Fin": vac["Fecha Fin"],
+                    "Días": vac["N° Días"],
+                    "Documento": vac["Documento"],
+                    "MAD": vac["MAD"],
+                    "Observaciones": vac["Observaciones"],
+                    "Fraccionamiento": vac["Fraccionamiento"]
+                })
+                if (vac["Fecha Fin"] - datetime.date.today()).days <= 30:
+                    vencimientos.append({
+                        "Trabajador": nombre,
+                        "Periodo": f"{vac['Periodo']['Inicio Ciclo']} - {vac['Periodo']['Fin Ciclo']}",
+                        "Fin": vac["Fecha Fin"],
+                        "Días Restantes": (vac["Fecha Fin"] - datetime.date.today()).days
+                    })
+
+        if data:
+            st.subheader("📋 Vacaciones Registradas")
+            st.dataframe(pd.DataFrame(data))
+
+        if vencimientos:
+            st.subheader("⚠️ Vacaciones Próximas a Vencer")
+            st.dataframe(pd.DataFrame(vencimientos))
+        else:
+            st.info("No hay vacaciones próximas a vencer.")
+    else:
+        st.warning("No hay trabajadores registrados.")
+
+# Reporte de todos los trabajadores
+elif menu == "Reporte de Trabajadores":
+    st.header("📑 Reporte General de Trabajadores")
+    if st.session_state["trabajadores"]:
+        nombre = st.selectbox("Seleccione trabajador", list(st.session_state["trabajadores"].keys()))
+        trabajador = st.session_state["trabajadores"][nombre]
+        periodos = trabajador.calcular_periodos()
+        reporte = []
+        for p in periodos:
+            reporte.append({
+                "Inicio Ciclo": p["Inicio Ciclo"],
+                "Fin Ciclo": p["Fin Ciclo"],
+                "Goce Hasta": p["Goce Hasta"],
+                "Acumulable Hasta": p["Acumulable Hasta"],
+                "Dias Tomados": p["Dias Tomados"]
+            })
+        st.subheader(f"Periodos de {nombre}")
+        st.dataframe(pd.DataFrame(reporte))
+
+        if trabajador.vacaciones:
+            vac_data = []
+            for vac in trabajador.vacaciones:
+                vac_data.append({
+                    "Periodo": f"{vac['Periodo']['Inicio Ciclo']} - {vac['Periodo']['Fin Ciclo']}",
+                    "Inicio": vac["Fecha Inicio"],
+                    "Fin": vac["Fecha Fin"],
+                    "Días": vac["N° Días"],
+                    "Documento": vac["Documento"],
+                    "MAD": vac["MAD"],
+                    "Observaciones": vac["Observaciones"],
+                    "Fraccionamiento": vac["Fraccionamiento"]
+                })
+            st.subheader("Vacaciones Tomadas")
+            st.dataframe(pd.DataFrame(vac_data))
+        else:
+            st.info("Este trabajador no tiene vacaciones registradas.")
