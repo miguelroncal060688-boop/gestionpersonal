@@ -7,11 +7,11 @@ from dateutil.relativedelta import relativedelta
 # Clase Trabajador
 # -----------------------------
 class Trabajador:
-    def __init__(self, numero, dni, nombres, d_leg, fecha_ingreso):
+    def __init__(self, numero, dni, nombres, regimen, fecha_ingreso):
         self.numero = numero
         self.dni = dni
         self.nombres = nombres
-        self.d_leg = d_leg
+        self.regimen = regimen
         self.fecha_ingreso = datetime.datetime.strptime(fecha_ingreso, "%Y-%m-%d").date()
         # Cada registro de vacaciones tendrá SIEMPRE las mismas claves
         self.vacaciones = []  # lista de dicts
@@ -70,6 +70,7 @@ class Trabajador:
         tipo: 'Resolución', 'Solicitud', 'Memorando'
         """
         fecha_inicio = datetime.datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
+        dias = int(dias)
         fecha_fin = fecha_inicio + datetime.timedelta(days=dias)
 
         # Validar reglas de fraccionamiento
@@ -103,7 +104,7 @@ class Trabajador:
 # Configuración de la app
 # -----------------------------
 st.set_page_config(page_title="Gestión de Vacaciones", layout="wide")
-st.title("📊 Sistema de Gestión de Vacaciones - D.Leg. 276")
+st.title("📊 Sistema de Gestión de Vacaciones - D.Leg. 276 / Otros regímenes")
 
 if "trabajadores" not in st.session_state:
     st.session_state["trabajadores"] = {}
@@ -115,9 +116,11 @@ menu = st.sidebar.radio(
     "Menú",
     [
         "Registrar Trabajador",
+        "Resoluciones",
         "Registrar Vacaciones",
         "Dashboard",
-        "Reporte de Trabajadores"
+        "Reporte de Trabajadores",
+        "Administrar Registros"
     ]
 )
 
@@ -129,7 +132,15 @@ if menu == "Registrar Trabajador":
     numero = st.text_input("N°")
     dni = st.text_input("DNI")
     nombres = st.text_input("Apellidos y Nombres")
-    d_leg = st.text_input("D.Leg.")
+    regimen = st.selectbox(
+        "Régimen",
+        [
+            "Decreto Legislativo N° 1057",
+            "Decreto Legislativo N° 276",
+            "Decreto Legislativo N° 728",
+            "Carrera Especial"
+        ]
+    )
     fecha_ingreso = st.date_input("Fecha de Ingreso")
 
     if st.button("Guardar Trabajador"):
@@ -140,7 +151,7 @@ if menu == "Registrar Trabajador":
                 numero,
                 dni,
                 nombres,
-                d_leg,
+                regimen,
                 fecha_ingreso.strftime("%Y-%m-%d")
             )
             # Clave: nombre del trabajador
@@ -148,10 +159,10 @@ if menu == "Registrar Trabajador":
             st.success(f"Trabajador {nombres} registrado correctamente.")
 
 # -----------------------------
-# Registrar Vacaciones
+# Resoluciones (pestaña aparte)
 # -----------------------------
-elif menu == "Registrar Vacaciones":
-    st.header("Registrar Vacaciones / Solicitud / Memorando / Resolución")
+elif menu == "Resoluciones":
+    st.header("Registro de Resoluciones por periodo")
 
     if st.session_state["trabajadores"]:
         nombre = st.selectbox(
@@ -168,14 +179,62 @@ elif menu == "Registrar Vacaciones":
                 format_func=lambda p: f"{p['Inicio Ciclo']} - {p['Fin Ciclo']} (Tomados: {p['Dias Tomados']} días)"
             )
 
-            tipo = st.radio("Tipo de registro", ["Resolución", "Solicitud", "Memorando"])
+            st.markdown("**Datos de la Resolución**")
+            fecha_inicio = st.date_input("Fecha Inicio programada (Resolución)")
+            dias = st.number_input("N° de Días autorizados", min_value=1, max_value=30, value=30)
+            documento = st.text_input("N° de Resolución")
+            mad = st.text_input("MAD / Referencia interna")
+            observaciones = st.text_area("Observaciones")
+            fraccionamiento = st.checkbox("¿Hay acuerdo de fraccionamiento en la Resolución?")
+            integro = st.checkbox("¿Gozará íntegro de 30 días en esta Resolución?")
+
+            if st.button("Guardar Resolución"):
+                registro = trabajador.registrar_vacaciones(
+                    periodo,
+                    fecha_inicio.strftime("%Y-%m-%d"),
+                    dias,
+                    "Resolución",
+                    documento,
+                    mad,
+                    observaciones,
+                    fraccionamiento,
+                    integro
+                )
+                st.write(registro)
+        else:
+            st.info("Este trabajador aún no tiene periodos completos generados (no ha cumplido un año).")
+    else:
+        st.warning("Primero registre un trabajador.")
+
+# -----------------------------
+# Registrar Vacaciones (Solicitud / Memorando)
+# -----------------------------
+elif menu == "Registrar Vacaciones":
+    st.header("Registrar Vacaciones (Solicitud / Memorando)")
+
+    if st.session_state["trabajadores"]:
+        nombre = st.selectbox(
+            "Seleccione trabajador",
+            list(st.session_state["trabajadores"].keys())
+        )
+        trabajador = st.session_state["trabajadores"][nombre]
+
+        periodos = trabajador.calcular_periodos()
+        if periodos:
+            periodo = st.selectbox(
+                "Seleccione periodo",
+                periodos,
+                format_func=lambda p: f"{p['Inicio Ciclo']} - {p['Fin Ciclo']} (Tomados: {p['Dias Tomados']} días)"
+            )
+
+            tipo = st.radio("Tipo de registro", ["Solicitud", "Memorando"])
             fecha_inicio = st.date_input("Fecha Inicio de Vacaciones")
             dias = st.number_input("N° de Días", min_value=1, max_value=30, value=7)
-            documento = st.text_input("Documento")
-            mad = st.text_input("MAD")
+            documento = st.text_input("Documento (Solicitud/Memorando)")
+            mad = st.text_input("MAD / Referencia interna")
             observaciones = st.text_area("Observaciones")
             fraccionamiento = st.checkbox("¿Hay acuerdo de fraccionamiento?")
-            integro = st.checkbox("¿Gozará íntegro de 30 días?")
+            integro = st.checkbox("¿Gozará íntegro de 30 días en este registro?")
 
             if st.button("Guardar Registro"):
                 registro = trabajador.registrar_vacaciones(
@@ -214,6 +273,7 @@ elif menu == "Dashboard":
                 periodo_str = f"{vac.get('Periodo Inicio')} - {vac.get('Periodo Fin')}"
                 fila = {
                     "Trabajador": nombre,
+                    "Régimen": trab.regimen,
                     "Periodo": periodo_str,
                     "Tipo": vac.get("Tipo"),
                     "Inicio": vac.get("Fecha Inicio"),
@@ -241,6 +301,7 @@ elif menu == "Dashboard":
             if len(periodos_no_usados) >= 2:
                 vencimientos.append({
                     "Trabajador": nombre,
+                    "Régimen": trab.regimen,
                     "Periodo": f"{periodos_no_usados[0]['Inicio Ciclo']} - {periodos_no_usados[0]['Fin Ciclo']}",
                     "Estado": "Vencido por acumulación de 2 periodos completos sin uso"
                 })
@@ -328,3 +389,86 @@ elif menu == "Reporte de Trabajadores":
             st.info("Este trabajador no tiene vacaciones registradas.")
     else:
         st.warning("No hay trabajadores registrados.")
+
+# -----------------------------
+# Administrar Registros (modificar / borrar)
+# -----------------------------
+elif menu == "Administrar Registros":
+    st.header("Administrar Trabajadores y Vacaciones")
+
+    # --- Trabajadores ---
+    st.subheader("Trabajadores")
+    if st.session_state["trabajadores"]:
+        nombres = list(st.session_state["trabajadores"].keys())
+        nombre_sel = st.selectbox("Seleccione trabajador para editar/borrar", nombres)
+        trab = st.session_state["trabajadores"][nombre_sel]
+
+        st.write("**Datos actuales:**")
+        st.write(f"N°: {trab.numero}")
+        st.write(f"DNI: {trab.dni}")
+        st.write(f"Régimen: {trab.regimen}")
+        st.write(f"Fecha de ingreso: {trab.fecha_ingreso}")
+
+        st.markdown("**Modificar datos del trabajador**")
+        nuevo_numero = st.text_input("Nuevo N°", value=trab.numero)
+        nuevo_dni = st.text_input("Nuevo DNI", value=trab.dni)
+        nuevo_nombre = st.text_input("Nuevo nombre", value=trab.nombres)
+        nuevo_regimen = st.selectbox(
+            "Nuevo Régimen",
+            [
+                "Decreto Legislativo N° 1057",
+                "Decreto Legislativo N° 276",
+                "Decreto Legislativo N° 728",
+                "Carrera Especial"
+            ],
+            index=[
+                "Decreto Legislativo N° 1057",
+                "Decreto Legislativo N° 276",
+                "Decreto Legislativo N° 728",
+                "Carrera Especial"
+            ].index(trab.regimen)
+        )
+
+        if st.button("Guardar cambios del trabajador"):
+            # Actualizar objeto
+            trab.numero = nuevo_numero
+            trab.dni = nuevo_dni
+            trab.nombres = nuevo_nombre
+            trab.regimen = nuevo_regimen
+            # Si cambió el nombre, actualizar la clave en el diccionario
+            if nuevo_nombre != nombre_sel:
+                st.session_state["trabajadores"].pop(nombre_sel)
+                st.session_state["trabajadores"][nuevo_nombre] = trab
+            st.success("Datos del trabajador actualizados.")
+
+        if st.button("Borrar trabajador y todas sus vacaciones"):
+            st.session_state["trabajadores"].pop(nombre_sel)
+            st.success("Trabajador y sus registros de vacaciones eliminados.")
+    else:
+        st.info("No hay trabajadores registrados.")
+
+    st.markdown("---")
+
+    # --- Vacaciones ---
+    st.subheader("Vacaciones")
+    if st.session_state["trabajadores"]:
+        nombre_vac = st.selectbox(
+            "Seleccione trabajador para ver/borrar vacaciones",
+            list(st.session_state["trabajadores"].keys())
+        )
+        trab_vac = st.session_state["trabajadores"][nombre_vac]
+
+        if trab_vac.vacaciones:
+            df_vac = pd.DataFrame(trab_vac.vacaciones)
+            st.dataframe(df_vac)
+
+            indices = list(range(len(trab_vac.vacaciones)))
+            idx_borrar = st.selectbox("Seleccione índice de registro de vacaciones a borrar", indices)
+
+            if st.button("Borrar registro de vacaciones seleccionado"):
+                trab_vac.vacaciones.pop(idx_borrar)
+                st.success("Registro de vacaciones eliminado.")
+        else:
+            st.info("Este trabajador no tiene vacaciones registradas.")
+    else:
+        st.info("No hay trabajadores registrados.")
