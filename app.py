@@ -190,4 +190,12 @@ elif menu == "Reporte de Trabajadores":
             for p in periodos:
                 reporte.append({
                     "DNI": dni,
-                    "N
+                    "Nombres": trab.nombres,
+                    "Inicio Ciclo": p["Inicio Ciclo"],
+                    "Fin Ciclo": p["Fin Ciclo"],
+                    "Goce Hasta": p["Goce Hasta"],
+                    "Acumulable Hasta": p["Acumulable Hasta"]
+                })
+        st.dataframe(pd.DataFrame(reporte))
+    else:
+        st.warning("No hay trabajadores registrados.")
