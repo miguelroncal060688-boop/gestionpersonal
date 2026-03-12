@@ -186,4 +186,18 @@ elif menu == "Reporte de Trabajadores":
             vac_data = []
             for vac in trabajador.vacaciones:
                 vac_data.append({
-                    "Periodo": f"{vac['Periodo Inicio']} - {vac['
+                    "Periodo": f"{vac['Periodo Inicio']} - {vac['Periodo Fin']}",
+                    "Tipo": vac["Tipo"],
+                    "Inicio": vac["Fecha Inicio"],
+                    "Fin": vac["Fecha Fin"],
+                    "Días": vac["N° Días"],
+                    "Documento": vac["Documento"],
+                    "MAD": vac["MAD"],
+                    "Observaciones": vac["Observaciones"],
+                    "Fraccionamiento": vac["Fraccionamiento"],
+                    "Integro": vac["Integro"]
+                })
+            st.subheader("Vacaciones Tomadas")
+            st.dataframe(pd.DataFrame(vac_data))
+        else:
+            st.info("Este trabajador no tiene vacaciones registradas.")
