@@ -1,6 +1,7 @@
 import streamlit as st
 import datetime
 import pandas as pd
+from dateutil.relativedelta import relativedelta
 
 # Clase Trabajador
 class Trabajador:
@@ -20,16 +21,16 @@ class Trabajador:
         inicio = self.fecha_ingreso
         hoy = datetime.date.today()
         while inicio < hoy:
-            fin_ciclo = inicio.replace(year=inicio.year + 1) - datetime.timedelta(days=1)
-            goce_hasta = fin_ciclo.replace(year=fin_ciclo.year + 1)
-            acum_hasta = goce_hasta.replace(year=goce_hasta.year + 1)
+            fin_ciclo = inicio + relativedelta(years=1) - datetime.timedelta(days=1)
+            goce_hasta = fin_ciclo + relativedelta(years=1)
+            acum_hasta = goce_hasta + relativedelta(years=1)
             periodos.append({
                 "Inicio Ciclo": inicio,
                 "Fin Ciclo": fin_ciclo,
                 "Goce Hasta": goce_hasta,
                 "Acumulable Hasta": acum_hasta
             })
-            inicio = inicio.replace(year=inicio.year + 1)
+            inicio = inicio + relativedelta(years=1)
         return periodos
 
     def registrar_vacaciones(self, fecha_inicio, dias, documento, mad, observaciones=""):
@@ -81,7 +82,14 @@ if "trabajadores" not in st.session_state:
     st.session_state["trabajadores"] = {}
 
 # Menú lateral
-menu = st.sidebar.radio("Menú", ["Registrar Trabajador", "Registrar Vacaciones", "Solicitudes", "Memorandos", "Dashboard", "Reporte de Trabajadores"])
+menu = st.sidebar.radio("Menú", [
+    "Registrar Trabajador",
+    "Registrar Vacaciones",
+    "Solicitudes",
+    "Memorandos",
+    "Dashboard",
+    "Reporte de Trabajadores"
+])
 
 # Registrar trabajador
 if menu == "Registrar Trabajador":
