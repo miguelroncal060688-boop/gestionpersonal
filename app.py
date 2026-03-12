@@ -11,9 +11,7 @@ class Trabajador:
         self.nombres = nombres
         self.d_leg = d_leg
         self.fecha_ingreso = datetime.datetime.strptime(fecha_ingreso, "%Y-%m-%d").date()
-        self.vacaciones = []  # cada registro incluye periodo
-        self.solicitudes = []
-        self.memorandos = []
+        self.vacaciones = []  # lista de dicts con periodo y detalle
 
     def calcular_periodos(self):
         """Genera los periodos vacacionales desde la fecha de ingreso"""
@@ -35,7 +33,7 @@ class Trabajador:
             inicio = inicio + relativedelta(years=1)
         return periodos
 
-    def registrar_vacaciones(self, periodo, fecha_inicio, dias, documento, mad, observaciones="", fraccionamiento=False):
+    def registrar_vacaciones(self, periodo, fecha_inicio, dias, tipo, documento, mad, observaciones="", fraccionamiento=False):
         fecha_inicio = datetime.datetime.strptime(fecha_inicio, "%Y-%m-%d").date()
         fecha_fin = fecha_inicio + datetime.timedelta(days=dias)
 
@@ -52,6 +50,7 @@ class Trabajador:
             "Fecha Inicio": fecha_inicio,
             "Fecha Fin": fecha_fin,
             "N° Días": dias,
+            "Tipo": tipo,  # solicitud, memorando o resolución
             "Documento": documento,
             "MAD": mad,
             "Observaciones": observaciones,
@@ -62,7 +61,7 @@ class Trabajador:
 
 # --- Interfaz Streamlit ---
 st.set_page_config(page_title="Gestión de Vacaciones", layout="wide")
-st.title("📊 Dashboard de Gestión de Vacaciones - D.Leg. 276")
+st.title("📊 Sistema de Gestión de Vacaciones - D.Leg. 276")
 
 if "trabajadores" not in st.session_state:
     st.session_state["trabajadores"] = {}
@@ -91,21 +90,24 @@ if menu == "Registrar Trabajador":
 
 # Registrar vacaciones
 elif menu == "Registrar Vacaciones":
-    st.header("Registrar Vacaciones")
+    st.header("Registrar Vacaciones / Solicitud / Memorando / Resolución")
     if st.session_state["trabajadores"]:
         nombre = st.selectbox("Seleccione trabajador", list(st.session_state["trabajadores"].keys()))
         trabajador = st.session_state["trabajadores"][nombre]
         periodos = trabajador.calcular_periodos()
-        periodo = st.selectbox("Seleccione periodo", periodos, format_func=lambda p: f"{p['Inicio Ciclo']} - {p['Fin Ciclo']} (Tomados: {p['Dias Tomados']} días)")
+        periodo = st.selectbox("Seleccione periodo", periodos,
+                               format_func=lambda p: f"{p['Inicio Ciclo']} - {p['Fin Ciclo']} (Tomados: {p['Dias Tomados']} días)")
+        tipo = st.radio("Tipo de registro", ["Solicitud", "Memorando", "Resolución"])
         fecha_inicio = st.date_input("Fecha Inicio de Vacaciones")
         dias = st.number_input("N° de Días", min_value=1, max_value=30, value=7)
         documento = st.text_input("Documento")
         mad = st.text_input("MAD")
         observaciones = st.text_area("Observaciones")
         fraccionamiento = st.checkbox("¿Hay acuerdo de fraccionamiento?")
+        integro = st.checkbox("¿Gozará íntegro de 30 días?")
 
-        if st.button("Guardar Vacaciones"):
-            registro = trabajador.registrar_vacaciones(periodo, fecha_inicio.strftime("%Y-%m-%d"), dias, documento, mad, observaciones, fraccionamiento)
+        if st.button("Guardar Registro"):
+            registro = trabajador.registrar_vacaciones(periodo, fecha_inicio.strftime("%Y-%m-%d"), dias, tipo, documento, mad, observaciones, fraccionamiento)
             st.write(registro)
     else:
         st.warning("Primero registre un trabajador.")
@@ -121,6 +123,7 @@ elif menu == "Dashboard":
                 data.append({
                     "Trabajador": nombre,
                     "Periodo": f"{vac['Periodo']['Inicio Ciclo']} - {vac['Periodo']['Fin Ciclo']}",
+                    "Tipo": vac["Tipo"],
                     "Inicio": vac["Fecha Inicio"],
                     "Fin": vac["Fecha Fin"],
                     "Días": vac["N° Días"],
@@ -173,6 +176,7 @@ elif menu == "Reporte de Trabajadores":
             for vac in trabajador.vacaciones:
                 vac_data.append({
                     "Periodo": f"{vac['Periodo']['Inicio Ciclo']} - {vac['Periodo']['Fin Ciclo']}",
+                    "Tipo": vac["Tipo"],
                     "Inicio": vac["Fecha Inicio"],
                     "Fin": vac["Fecha Fin"],
                     "Días": vac["N° Días"],
