@@ -1,55 +1,128 @@
-# ---------------------------------------------------------
-# app.py - Sistema de Gestión de Vacaciones (todo en uno)
-# SQLite + CSV + Panel de Control + Resoluciones + Vacaciones
-# ---------------------------------------------------------
+# =========================================================
+# =====================  BLOQUE 1  ========================
+# ========== CONFIGURACIÓN, IMPORTS Y TABLAS DB ===========
+# =========================================================
 
 import streamlit as st
 import sqlite3
 import datetime
 import pandas as pd
 from pathlib import Path
-
-# ---------------------------------------------------------
-# CONFIGURACIÓN GENERAL
-# ---------------------------------------------------------
+import hashlib
 
 DB_PATH = "vacaciones.db"
 
+# ---------------------------------------------------------
+# CONEXIÓN A BD
+# ---------------------------------------------------------
 def get_conn():
-    """
-    Devuelve una conexión a la base de datos SQLite.
-    check_same_thread=False permite usar la conexión en Streamlit.
-    """
     conn = sqlite3.connect(DB_PATH, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     return conn
 
 # ---------------------------------------------------------
-# MÓDULO DB: CREACIÓN DE TABLAS
+# HELPERS GENERALES
 # ---------------------------------------------------------
+def to_date(s: str) -> datetime.date:
+    return datetime.datetime.strptime(s, "%Y-%m-%d").date()
 
+def from_date(d: datetime.date) -> str:
+    return d.strftime("%Y-%m-%d")
+
+def hash_password(password: str) -> str:
+    return hashlib.sha256(password.encode("utf-8")).hexdigest()
+
+# ---------------------------------------------------------
+# CREACIÓN DE TABLAS (MODELO A COMPLETO)
+# ---------------------------------------------------------
 def init_db():
-    """
-    Crea las tablas si no existen.
-    No borra datos existentes.
-    Seguro para producción.
-    """
     conn = get_conn()
     cur = conn.cursor()
 
-    # Tabla de trabajadores
+    # -------------------------
+    # USUARIOS (LOGIN)
+    # -------------------------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS usuarios (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        usuario TEXT UNIQUE NOT NULL,
+        password_hash TEXT NOT NULL,
+        rol TEXT NOT NULL
+    )
+    """)
+
+    # -------------------------
+    # DIRECCIONES
+    # -------------------------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS direcciones (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombre TEXT NOT NULL,
+        director_id INTEGER
+    )
+    """)
+
+    # -------------------------
+    # UNIDADES (depende de dirección)
+    # -------------------------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS unidades (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        direccion_id INTEGER NOT NULL,
+        nombre TEXT NOT NULL,
+        jefe_unidad_id INTEGER,
+        FOREIGN KEY(direccion_id) REFERENCES direcciones(id) ON DELETE CASCADE
+    )
+    """)
+
+    # -------------------------
+    # ÁREAS (depende de unidad)
+    # -------------------------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS areas (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        unidad_id INTEGER NOT NULL,
+        nombre TEXT NOT NULL,
+        jefe_area_id INTEGER,
+        FOREIGN KEY(unidad_id) REFERENCES unidades(id) ON DELETE CASCADE
+    )
+    """)
+
+    # -------------------------
+    # JEFES (dirigen un área)
+    # -------------------------
+    cur.execute("""
+    CREATE TABLE IF NOT EXISTS jefes (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        nombres TEXT NOT NULL,
+        cargo TEXT,
+        area_id INTEGER NOT NULL,
+        FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE CASCADE
+    )
+    """)
+
+    # -------------------------
+    # TRABAJADORES (pertenecen a un área)
+    # -------------------------
     cur.execute("""
     CREATE TABLE IF NOT EXISTS trabajadores (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         numero TEXT,
         dni TEXT,
         nombres TEXT NOT NULL,
+        cargo TEXT,
         regimen TEXT NOT NULL,
-        fecha_ingreso TEXT NOT NULL
+        fecha_ingreso TEXT NOT NULL,
+        area_id INTEGER NOT NULL,
+        jefe_id INTEGER NOT NULL,
+        FOREIGN KEY(area_id) REFERENCES areas(id) ON DELETE CASCADE,
+        FOREIGN KEY(jefe_id) REFERENCES jefes(id) ON DELETE SET NULL
     )
     """)
 
-    # Tabla de periodos (normalizados)
+    # -------------------------
+    # PERIODOS
+    # -------------------------
     cur.execute("""
     CREATE TABLE IF NOT EXISTS periodos (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -63,7 +136,9 @@ def init_db():
     )
     """)
 
-    # Tabla de resoluciones (no descuentan días)
+    # -------------------------
+    # RESOLUCIONES
+    # -------------------------
     cur.execute("""
     CREATE TABLE IF NOT EXISTS resoluciones (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -79,13 +154,15 @@ def init_db():
     )
     """)
 
-    # Tabla de vacaciones (sí descuentan días)
+    # -------------------------
+    # VACACIONES
+    # -------------------------
     cur.execute("""
     CREATE TABLE IF NOT EXISTS vacaciones (
         id INTEGER PRIMARY KEY AUTOINCREMENT,
         trabajador_id INTEGER NOT NULL,
         periodo_id INTEGER NOT NULL,
-        tipo TEXT NOT NULL, -- Solicitud / Memorando
+        tipo TEXT NOT NULL,
         fecha_inicio TEXT NOT NULL,
         fecha_fin TEXT NOT NULL,
         dias INTEGER NOT NULL,
@@ -94,99 +171,221 @@ def init_db():
         observaciones TEXT,
         fraccionamiento INTEGER DEFAULT 0,
         integro INTEGER DEFAULT 0,
+        jefe_id INTEGER,
+        autorizado_rrhh INTEGER DEFAULT 0,
         FOREIGN KEY(trabajador_id) REFERENCES trabajadores(id) ON DELETE CASCADE,
-        FOREIGN KEY(periodo_id) REFERENCES periodos(id) ON DELETE CASCADE
+        FOREIGN KEY(periodo_id) REFERENCES periodos(id) ON DELETE CASCADE,
+        FOREIGN KEY(jefe_id) REFERENCES jefes(id) ON DELETE SET NULL
     )
     """)
 
     conn.commit()
+
+    # Crear usuario admin si no existe
+    cur.execute("SELECT COUNT(*) AS c FROM usuarios")
+    if cur.fetchone()["c"] == 0:
+        cur.execute("""
+            INSERT INTO usuarios (usuario, password_hash, rol)
+            VALUES (?, ?, ?)
+        """, ("admin", hash_password("admin"), "admin"))
+        conn.commit()
+
     conn.close()
+# =========================================================
+# =====================  BLOQUE 2  ========================
+# ======================   CRUD DB   ======================
+# =========================================================
 
 # ---------------------------------------------------------
-# MÓDULO DB: HELPERS DE FECHAS
+# CRUD USUARIOS
 # ---------------------------------------------------------
-
-def to_date(s: str) -> datetime.date:
-    """Convierte 'YYYY-MM-DD' a datetime.date."""
-    return datetime.datetime.strptime(s, "%Y-%m-%d").date()
-
-def from_date(d: datetime.date) -> str:
-    """Convierte datetime.date a 'YYYY-MM-DD'."""
-    return d.strftime("%Y-%m-%d")
-# ---------------------------------------------------------
-# MÓDULO DB: CRUD DE TRABAJADORES
-# ---------------------------------------------------------
-
-def crear_trabajador(numero, dni, nombres, regimen, fecha_ingreso):
-    """
-    Crea un trabajador y genera automáticamente sus periodos.
-    """
+def obtener_usuario_por_nombre(usuario):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("""
-        INSERT INTO trabajadores (numero, dni, nombres, regimen, fecha_ingreso)
-        VALUES (?, ?, ?, ?, ?)
-    """, (numero, dni, nombres, regimen, fecha_ingreso))
-    trabajador_id = cur.lastrowid
-    conn.commit()
-    conn.close()
-
-    generar_periodos_para_trabajador(trabajador_id, fecha_ingreso)
-    return trabajador_id
-
-
-def listar_trabajadores():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM trabajadores ORDER BY nombres")
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def obtener_trabajador(trabajador_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("SELECT * FROM trabajadores WHERE id = ?", (trabajador_id,))
+    cur.execute("SELECT * FROM usuarios WHERE usuario = ?", (usuario,))
     row = cur.fetchone()
     conn.close()
     return row
 
-
-def actualizar_trabajador(trabajador_id, numero, dni, nombres, regimen, fecha_ingreso):
-    """
-    Actualiza datos del trabajador y regenera periodos si cambia la fecha de ingreso.
-    """
+def crear_usuario(usuario, password, rol):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        UPDATE trabajadores
-        SET numero = ?, dni = ?, nombres = ?, regimen = ?, fecha_ingreso = ?
-        WHERE id = ?
-    """, (numero, dni, nombres, regimen, fecha_ingreso, trabajador_id))
+        INSERT INTO usuarios (usuario, password_hash, rol)
+        VALUES (?, ?, ?)
+    """, (usuario, hash_password(password), rol))
     conn.commit()
     conn.close()
 
-    generar_periodos_para_trabajador(trabajador_id, fecha_ingreso)
+def listar_usuarios():
+    conn = get_conn()
+    df = pd.read_sql_query("SELECT id, usuario, rol FROM usuarios ORDER BY usuario", conn)
+    conn.close()
+    return df
 
-
-def borrar_trabajador(trabajador_id):
+def actualizar_rol_usuario(usuario_id, nuevo_rol):
     conn = get_conn()
     cur = conn.cursor()
-    cur.execute("DELETE FROM trabajadores WHERE id = ?", (trabajador_id,))
+    cur.execute("UPDATE usuarios SET rol = ? WHERE id = ?", (nuevo_rol, usuario_id))
     conn.commit()
     conn.close()
 
+# ---------------------------------------------------------
+# CRUD DIRECCIONES
+# ---------------------------------------------------------
+def crear_direccion(nombre):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("INSERT INTO direcciones (nombre) VALUES (?)", (nombre,))
+    conn.commit()
+    conn.close()
+
+def listar_direcciones():
+    conn = get_conn()
+    df = pd.read_sql_query("SELECT * FROM direcciones ORDER BY nombre", conn)
+    conn.close()
+    return df
 
 # ---------------------------------------------------------
-# MÓDULO DB: CRUD DE PERIODOS
+# CRUD UNIDADES
 # ---------------------------------------------------------
+def crear_unidad(direccion_id, nombre):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO unidades (direccion_id, nombre)
+        VALUES (?, ?)
+    """, (direccion_id, nombre))
+    conn.commit()
+    conn.close()
 
+def listar_unidades_por_direccion(direccion_id):
+    conn = get_conn()
+    df = pd.read_sql_query("""
+        SELECT * FROM unidades
+        WHERE direccion_id = ?
+        ORDER BY nombre
+    """, conn, params=(direccion_id,))
+    conn.close()
+    return df
+
+def listar_unidades():
+    conn = get_conn()
+    df = pd.read_sql_query("""
+        SELECT u.id, u.nombre, d.nombre AS direccion
+        FROM unidades u
+        JOIN direcciones d ON d.id = u.direccion_id
+        ORDER BY d.nombre, u.nombre
+    """, conn)
+    conn.close()
+    return df
+
+# ---------------------------------------------------------
+# CRUD ÁREAS
+# ---------------------------------------------------------
+def crear_area(unidad_id, nombre):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO areas (unidad_id, nombre)
+        VALUES (?, ?)
+    """, (unidad_id, nombre))
+    conn.commit()
+    conn.close()
+
+def listar_areas_por_unidad(unidad_id):
+    conn = get_conn()
+    df = pd.read_sql_query("""
+        SELECT * FROM areas
+        WHERE unidad_id = ?
+        ORDER BY nombre
+    """, conn, params=(unidad_id,))
+    conn.close()
+    return df
+
+def listar_areas():
+    conn = get_conn()
+    df = pd.read_sql_query("""
+        SELECT a.id, a.nombre, u.nombre AS unidad, d.nombre AS direccion
+        FROM areas a
+        JOIN unidades u ON u.id = a.unidad_id
+        JOIN direcciones d ON d.id = u.direccion_id
+        ORDER BY d.nombre, u.nombre, a.nombre
+    """, conn)
+    conn.close()
+    return df
+
+# ---------------------------------------------------------
+# CRUD JEFES
+# ---------------------------------------------------------
+def crear_jefe(nombres, cargo, area_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO jefes (nombres, cargo, area_id)
+        VALUES (?, ?, ?)
+    """, (nombres, cargo, area_id))
+    conn.commit()
+    conn.close()
+
+def listar_jefes():
+    conn = get_conn()
+    df = pd.read_sql_query("""
+        SELECT j.id, j.nombres, j.cargo,
+               a.nombre AS area, u.nombre AS unidad, d.nombre AS direccion
+        FROM jefes j
+        JOIN areas a ON a.id = j.area_id
+        JOIN unidades u ON u.id = a.unidad_id
+        JOIN direcciones d ON d.id = u.direccion_id
+        ORDER BY d.nombre, u.nombre, a.nombre, j.nombres
+    """, conn)
+    conn.close()
+    return df
+
+# ---------------------------------------------------------
+# CRUD TRABAJADORES
+# ---------------------------------------------------------
+def obtener_siguiente_numero_trabajador():
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("SELECT IFNULL(MAX(CAST(numero AS INTEGER)), 0) + 1 AS n FROM trabajadores")
+    n = cur.fetchone()["n"]
+    conn.close()
+    return str(n)
+
+def crear_trabajador(numero, dni, nombres, cargo, regimen, fecha_ingreso, area_id, jefe_id):
+    conn = get_conn()
+    cur = conn.cursor()
+    cur.execute("""
+        INSERT INTO trabajadores (numero, dni, nombres, cargo, regimen, fecha_ingreso, area_id, jefe_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    """, (numero, dni, nombres, cargo, regimen, fecha_ingreso, area_id, jefe_id))
+    trabajador_id = cur.lastrowid
+    conn.commit()
+    conn.close()
+    generar_periodos_para_trabajador(trabajador_id, fecha_ingreso)
+    return trabajador_id
+
+def listar_trabajadores():
+    conn = get_conn()
+    df = pd.read_sql_query("""
+        SELECT t.id, t.numero, t.dni, t.nombres, t.cargo, t.regimen, t.fecha_ingreso,
+               a.nombre AS area, u.nombre AS unidad, d.nombre AS direccion,
+               j.nombres AS jefe
+        FROM trabajadores t
+        JOIN areas a ON a.id = t.area_id
+        JOIN unidades u ON u.id = a.unidad_id
+        JOIN direcciones d ON d.id = u.direccion_id
+        JOIN jefes j ON j.id = t.jefe_id
+        ORDER BY t.nombres
+    """, conn)
+    conn.close()
+    return df
+
+# ---------------------------------------------------------
+# CRUD PERIODOS
+# ---------------------------------------------------------
 def generar_periodos_para_trabajador(trabajador_id, fecha_ingreso_str):
-    """
-    Genera periodos anuales desde la fecha de ingreso hasta hoy.
-    No borra periodos existentes, solo agrega los faltantes.
-    """
     conn = get_conn()
     cur = conn.cursor()
 
@@ -218,45 +417,21 @@ def generar_periodos_para_trabajador(trabajador_id, fecha_ingreso_str):
     conn.commit()
     conn.close()
 
-
 def listar_periodos_con_dias(trabajador_id):
-    """
-    Lista periodos con el total de días tomados (solo vacaciones reales).
-    """
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT
-            p.id,
-            p.trabajador_id,
-            p.inicio_ciclo,
-            p.fin_ciclo,
-            p.goce_hasta,
-            p.acumulable_hasta,
-            IFNULL(SUM(v.dias), 0) AS dias_tomados
+    df = pd.read_sql_query("""
+        SELECT p.*,
+               IFNULL((SELECT SUM(v.dias) FROM vacaciones v WHERE v.periodo_id = p.id), 0) AS dias_tomados
         FROM periodos p
-        LEFT JOIN vacaciones v ON v.periodo_id = p.id
         WHERE p.trabajador_id = ?
-        GROUP BY p.id
         ORDER BY p.inicio_ciclo
-    """, (trabajador_id,))
-    rows = cur.fetchall()
+    """, conn, params=(trabajador_id,))
     conn.close()
-    return rows
-
-
-def listar_periodos_no_usados(trabajador_id):
-    """
-    Devuelve periodos con menos de 30 días tomados.
-    """
-    periodos = listar_periodos_con_dias(trabajador_id)
-    return [p for p in periodos if p["dias_tomados"] < 30]
-
+    return df
 
 # ---------------------------------------------------------
-# MÓDULO DB: CRUD DE RESOLUCIONES (NO descuentan días)
+# CRUD RESOLUCIONES
 # ---------------------------------------------------------
-
 def crear_resolucion(trabajador_id, periodo_id, numero_resolucion, fecha_programada, dias_autorizados, mad, observaciones):
     conn = get_conn()
     cur = conn.cursor()
@@ -267,645 +442,1008 @@ def crear_resolucion(trabajador_id, periodo_id, numero_resolucion, fecha_program
     conn.commit()
     conn.close()
 
-
 def listar_resoluciones_por_trabajador(trabajador_id):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
+    df = pd.read_sql_query("""
         SELECT r.*, p.inicio_ciclo, p.fin_ciclo
         FROM resoluciones r
         JOIN periodos p ON p.id = r.periodo_id
         WHERE r.trabajador_id = ?
         ORDER BY r.fecha_programada
-    """, (trabajador_id,))
-    rows = cur.fetchall()
+    """, conn, params=(trabajador_id,))
     conn.close()
-    return rows
-
-
-def borrar_resolucion(resolucion_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM resoluciones WHERE id = ?", (resolucion_id,))
-    conn.commit()
-    conn.close()
-
+    return df
 
 # ---------------------------------------------------------
-# MÓDULO DB: CRUD DE VACACIONES (SÍ descuentan días)
+# CRUD VACACIONES
 # ---------------------------------------------------------
-
-def crear_vacacion(trabajador_id, periodo_id, tipo, fecha_inicio, fecha_fin, dias, documento, mad, observaciones, fraccionamiento, integro):
+def crear_vacacion(trabajador_id, periodo_id, tipo, fecha_inicio, fecha_fin, dias,
+                   documento, mad, observaciones, fraccionamiento, integro,
+                   jefe_id, autorizado_rrhh):
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("""
-        INSERT INTO vacaciones (trabajador_id, periodo_id, tipo, fecha_inicio, fecha_fin, dias, documento, mad, observaciones, fraccionamiento, integro)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO vacaciones (
+            trabajador_id, periodo_id, tipo, fecha_inicio, fecha_fin, dias,
+            documento, mad, observaciones, fraccionamiento, integro,
+            jefe_id, autorizado_rrhh
+        )
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
-        trabajador_id,
-        periodo_id,
-        tipo,
-        fecha_inicio,
-        fecha_fin,
-        dias,
-        documento,
-        mad,
-        observaciones,
+        trabajador_id, periodo_id, tipo, fecha_inicio, fecha_fin, dias,
+        documento, mad, observaciones,
         1 if fraccionamiento else 0,
-        1 if integro else 0
+        1 if integro else 0,
+        jefe_id,
+        1 if autorizado_rrhh else 0
     ))
     conn.commit()
     conn.close()
 
-
 def listar_vacaciones_por_trabajador(trabajador_id):
     conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT v.*, p.inicio_ciclo, p.fin_ciclo
+    df = pd.read_sql_query("""
+        SELECT v.*, p.inicio_ciclo, p.fin_ciclo,
+               j.nombres AS jefe_autoriza
         FROM vacaciones v
         JOIN periodos p ON p.id = v.periodo_id
+        LEFT JOIN jefes j ON j.id = v.jefe_id
         WHERE v.trabajador_id = ?
         ORDER BY v.fecha_inicio
-    """, (trabajador_id,))
-    rows = cur.fetchall()
+    """, conn, params=(trabajador_id,))
     conn.close()
-    return rows
-
-
-def borrar_vacacion(vacacion_id):
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("DELETE FROM vacaciones WHERE id = ?", (vacacion_id,))
-    conn.commit()
-    conn.close()
-
+    return df
 
 # ---------------------------------------------------------
-# MÓDULO DB: CONSULTAS PARA DASHBOARD
+# EXPORTACIÓN Y RESET
 # ---------------------------------------------------------
-
-def listar_todas_vacaciones_con_trabajador():
-    conn = get_conn()
-    cur = conn.cursor()
-    cur.execute("""
-        SELECT
-            v.*,
-            t.nombres AS trabajador,
-            t.regimen,
-            p.inicio_ciclo,
-            p.fin_ciclo
-        FROM vacaciones v
-        JOIN trabajadores t ON t.id = v.trabajador_id
-        JOIN periodos p ON p.id = v.periodo_id
-        ORDER BY v.fecha_inicio
-    """)
-    rows = cur.fetchall()
-    conn.close()
-    return rows
-
-
-def listar_todos_trabajadores_con_periodos_no_usados():
-    trabajadores = listar_trabajadores()
-    resultado = []
-    for t in trabajadores:
-        no_usados = listar_periodos_no_usados(t["id"])
-        if len(no_usados) >= 2:
-            resultado.append((t, no_usados))
-    return resultado
-
-
-# ---------------------------------------------------------
-# MÓDULO DB: EXPORTACIÓN CSV Y RESET TOTAL
-# ---------------------------------------------------------
-
-def exportar_tabla_csv(nombre_tabla: str) -> bytes:
+def exportar_tabla_csv(nombre_tabla):
     conn = get_conn()
     df = pd.read_sql_query(f"SELECT * FROM {nombre_tabla}", conn)
     conn.close()
     return df.to_csv(index=False).encode("utf-8")
 
-
 def resetear_todo():
-    """
-    Borra TODAS las tablas y las recrea.
-    Requiere confirmación desde la UI.
-    """
     conn = get_conn()
     cur = conn.cursor()
     cur.execute("DROP TABLE IF EXISTS vacaciones")
     cur.execute("DROP TABLE IF EXISTS resoluciones")
     cur.execute("DROP TABLE IF EXISTS periodos")
     cur.execute("DROP TABLE IF EXISTS trabajadores")
+    cur.execute("DROP TABLE IF EXISTS jefes")
+    cur.execute("DROP TABLE IF EXISTS areas")
+    cur.execute("DROP TABLE IF EXISTS unidades")
+    cur.execute("DROP TABLE IF EXISTS direcciones")
+    cur.execute("DROP TABLE IF EXISTS usuarios")
     conn.commit()
     conn.close()
     init_db()
+# =========================================================
+# =====================  BLOQUE 3  ========================
+# ============== LOGIN, ROLES Y MENÚ PRINCIPAL ============
+# =========================================================
 
-
-def db_file_bytes():
-    """
-    Devuelve el archivo SQLite como bytes para descarga.
-    """
-    p = Path(DB_PATH)
-    if p.exists():
-        return p.read_bytes()
-    return b""
-# ---------------------------------------------------------
-# MÓDULO LÓGICA: FUNCIONES DE NEGOCIO
-# ---------------------------------------------------------
-
-def calcular_fecha_fin(fecha_inicio: datetime.date, dias: int) -> datetime.date:
-    """
-    Calcula la fecha fin sumando 'dias' a la fecha de inicio.
-    """
-    return fecha_inicio + datetime.timedelta(days=dias)
-
-
-def validar_fraccionamiento(dias: int, fraccionamiento: bool) -> bool:
-    """
-    Regla: sin fraccionamiento, el mínimo permitido es 7 días.
-    """
-    if not fraccionamiento and dias < 7:
-        return False
-    return True
-
-
-def periodo_tiene_espacio(periodo, dias_nuevos: int) -> bool:
-    """
-    Verifica si un periodo tiene espacio para registrar más días.
-    """
-    return periodo["dias_tomados"] + dias_nuevos <= 30
-
-
-# ---------------------------------------------------------
-# INICIO DE LA INTERFAZ STREAMLIT
-# ---------------------------------------------------------
-
-st.set_page_config(page_title="Gestión de Vacaciones", layout="wide")
-st.title("📊 Sistema de Gestión de Vacaciones – SQLite + CSV (Todo en uno)")
-
-# Inicializar BD si no existe
+# Inicializar BD al arrancar
 init_db()
 
-# ---------------------------------------------------------
-# MENÚ LATERAL
-# ---------------------------------------------------------
-
-menu = st.sidebar.radio(
-    "Menú",
-    [
-        "Registrar Trabajador",
-        "Resoluciones",
-        "Registrar Vacaciones",
-        "Dashboard",
-        "Reporte de Trabajadores",
-        "Administrar Registros",
-        "Panel de Control"
-    ]
-)
+# Estado de sesión
+if "usuario" not in st.session_state:
+    st.session_state["usuario"] = None
+if "rol" not in st.session_state:
+    st.session_state["rol"] = None
 
 # ---------------------------------------------------------
-# UI: REGISTRAR TRABAJADOR
+# LOGIN
 # ---------------------------------------------------------
+def login():
+    st.title("SISTEMA DE GESTIÓN DE VACACIONES - DRE CAJAMARCA")
+    st.subheader("Inicio de sesión")
 
-if menu == "Registrar Trabajador":
+    usuario = st.text_input("Usuario")
+    password = st.text_input("Contraseña", type="password")
+
+    if st.button("Ingresar"):
+        row = obtener_usuario_por_nombre(usuario)
+        if row and row["password_hash"] == hash_password(password):
+            st.session_state["usuario"] = usuario
+            st.session_state["rol"] = row["rol"]
+            st.success("Acceso concedido.")
+            st.experimental_rerun()
+        else:
+            st.error("Usuario o contraseña incorrectos.")
+
+def logout():
+    st.session_state["usuario"] = None
+    st.session_state["rol"] = None
+    st.experimental_rerun()
+
+# Si no está logueado, mostrar login y detener
+if st.session_state["usuario"] is None:
+    login()
+    st.stop()
+
+ROL = st.session_state["rol"]
+
+# ---------------------------------------------------------
+# MENÚ SEGÚN ROL
+# ---------------------------------------------------------
+MENU_ADMIN = [
+    "Direcciones / Unidades / Áreas / Jefes",
+    "Registrar Trabajador",
+    "Reporte de Trabajadores",
+    "Gestión de Usuarios",
+    "Reset del Sistema"
+]
+
+MENU_RESPONSABLE = [
+    "Direcciones / Unidades / Áreas / Jefes",
+    "Registrar Trabajador",
+    "Reporte de Trabajadores"
+]
+
+MENU_REGISTRADOR = [
+    "Registrar Trabajador",
+    "Reporte de Trabajadores"
+]
+
+if ROL == "admin":
+    menu = st.sidebar.radio("Menú", MENU_ADMIN)
+elif ROL == "responsable":
+    menu = st.sidebar.radio("Menú", MENU_RESPONSABLE)
+else:
+    menu = st.sidebar.radio("Menú", MENU_REGISTRADOR)
+
+st.sidebar.write(f"Usuario: {st.session_state['usuario']} ({ROL})")
+if st.sidebar.button("Cerrar sesión"):
+    logout()
+
+st.title("SISTEMA DE GESTIÓN DE VACACIONES - DIRECCIÓN REGIONAL DE EDUCACIÓN CAJAMARCA")
+# =========================================================
+# =====================  BLOQUE 4  ========================
+# = DIRECCIONES, UNIDADES, ÁREAS, JEFES Y TRABAJADORES =
+# =========================================================
+
+# ---------------------------------------------------------
+# GESTIÓN DE DIRECCIONES / UNIDADES / ÁREAS / JEFES
+# ---------------------------------------------------------
+if menu == "Direcciones / Unidades / Áreas / Jefes":
+    st.header("Direcciones, Unidades, Áreas y Jefes")
+
+    # ----- Direcciones -----
+    st.subheader("Direcciones")
+    df_dir = listar_direcciones()
+    st.dataframe(df_dir.rename(columns={"id": "ID", "nombre": "Dirección"}))
+
+    nueva_dir = st.text_input("Nueva Dirección")
+    if st.button("Agregar Dirección"):
+        if nueva_dir.strip():
+            crear_direccion(nueva_dir.strip())
+            st.success("Dirección registrada.")
+            st.experimental_rerun()
+        else:
+            st.error("Ingrese un nombre de dirección.")
+
+    st.markdown("---")
+
+    # ----- Unidades -----
+    st.subheader("Unidades por Dirección")
+    df_dir = listar_direcciones()
+    if df_dir.empty:
+        st.info("Primero registre al menos una Dirección.")
+    else:
+        mapa_dir = {row["nombre"]: row["id"] for _, row in df_dir.iterrows()}
+        dir_sel = st.selectbox("Seleccione Dirección", list(mapa_dir.keys()))
+        dir_id = mapa_dir[dir_sel]
+
+        df_uni = listar_unidades_por_direccion(dir_id)
+        st.dataframe(df_uni.rename(columns={"id": "ID", "nombre": "Unidad"}))
+
+        nueva_unidad = st.text_input("Nueva Unidad")
+        if st.button("Agregar Unidad"):
+            if nueva_unidad.strip():
+                crear_unidad(dir_id, nueva_unidad.strip())
+                st.success("Unidad registrada.")
+                st.experimental_rerun()
+            else:
+                st.error("Ingrese un nombre de unidad.")
+
+    st.markdown("---")
+
+    # ----- Áreas -----
+    st.subheader("Áreas por Unidad")
+    df_uni_all = listar_unidades()
+    if df_uni_all.empty:
+        st.info("Primero registre unidades.")
+    else:
+        mapa_uni = {
+            f"{row['direccion']} - {row['nombre']}": row["id"]
+            for _, row in df_uni_all.iterrows()
+        }
+        unidad_sel = st.selectbox("Seleccione Unidad", list(mapa_uni.keys()))
+        unidad_id = mapa_uni[unidad_sel]
+
+        df_area = listar_areas_por_unidad(unidad_id)
+        st.dataframe(df_area.rename(columns={"id": "ID", "nombre": "Área"}))
+
+        nueva_area = st.text_input("Nueva Área")
+        if st.button("Agregar Área"):
+            if nueva_area.strip():
+                crear_area(unidad_id, nueva_area.strip())
+                st.success("Área registrada.")
+                st.experimental_rerun()
+            else:
+                st.error("Ingrese un nombre de área.")
+
+    st.markdown("---")
+
+    # ----- Jefes -----
+    st.subheader("Jefes por Área")
+    df_areas_all = listar_areas()
+    if df_areas_all.empty:
+        st.info("Primero registre áreas.")
+    else:
+        mapa_area = {
+            f"{row['direccion']} - {row['unidad']} - {row['nombre']}": row["id"]
+            for _, row in df_areas_all.iterrows()
+        }
+        area_sel = st.selectbox("Área del jefe", list(mapa_area.keys()))
+        area_id = mapa_area[area_sel]
+
+        nombre_jefe = st.text_input("Nombres del jefe")
+        cargo_jefe = st.text_input("Cargo del jefe")
+
+        if st.button("Guardar Jefe"):
+            if not nombre_jefe.strip():
+                st.error("Ingrese el nombre del jefe.")
+            else:
+                crear_jefe(nombre_jefe.strip(), cargo_jefe.strip(), area_id)
+                st.success("Jefe registrado.")
+                st.experimental_rerun()
+
+        st.subheader("Listado de jefes")
+        df_jefes = listar_jefes()
+        if not df_jefes.empty:
+            st.dataframe(df_jefes.rename(columns={
+                "id": "ID",
+                "nombres": "Jefe",
+                "cargo": "Cargo",
+                "area": "Área",
+                "unidad": "Unidad",
+                "direccion": "Dirección"
+            }))
+        else:
+            st.info("No hay jefes registrados aún.")
+
+# ---------------------------------------------------------
+# REGISTRO DE TRABAJADORES
+# ---------------------------------------------------------
+elif menu == "Registrar Trabajador":
     st.header("Registro de Trabajador")
 
-    numero = st.text_input("N°")
+    numero = obtener_siguiente_numero_trabajador()
+    st.write(f"N° (automático): **{numero}**")
+
     dni = st.text_input("DNI")
     nombres = st.text_input("Apellidos y Nombres")
+    cargo = st.text_input("Cargo del trabajador")
 
-    regimen = st.selectbox(
-        "Régimen",
-        [
-            "Decreto Legislativo N° 1057",
-            "Decreto Legislativo N° 276",
-            "Decreto Legislativo N° 728",
-            "Carrera Especial"
-        ]
-    )
+    regimen = st.selectbox("Régimen", [
+        "Decreto Legislativo N° 1057",
+        "Decreto Legislativo N° 276",
+        "Decreto Legislativo N° 728",
+        "Carrera Especial"
+    ])
 
-    fecha_ingreso = st.date_input("Fecha de Ingreso")
+    fecha_ingreso = st.date_input("Fecha de ingreso")
+
+    # Selección de área
+    df_areas_all = listar_areas()
+    if df_areas_all.empty:
+        st.warning("Primero registre Direcciones, Unidades y Áreas.")
+        st.stop()
+
+    mapa_area = {
+        f"{row['direccion']} - {row['unidad']} - {row['nombre']}": row["id"]
+        for _, row in df_areas_all.iterrows()
+    }
+    area_sel = st.selectbox("Área del trabajador", list(mapa_area.keys()))
+    area_id = mapa_area[area_sel]
+
+    # Selección de jefe inmediato
+    df_jefes = listar_jefes()
+    if df_jefes.empty:
+        st.warning("Primero registre jefes.")
+        st.stop()
+
+    mapa_jefes = {
+        f"{row['direccion']} - {row['unidad']} - {row['area']} - {row['nombres']}": row["id"]
+        for _, row in df_jefes.iterrows()
+    }
+    jefe_sel = st.selectbox("Jefe inmediato", list(mapa_jefes.keys()))
+    jefe_id = mapa_jefes[jefe_sel]
 
     if st.button("Guardar Trabajador"):
         if not nombres.strip():
-            st.error("El nombre es obligatorio.")
+            st.error("El nombre del trabajador es obligatorio.")
         else:
             crear_trabajador(
                 numero,
-                dni,
-                nombres,
+                dni.strip(),
+                nombres.strip(),
+                cargo.strip(),
                 regimen,
-                fecha_ingreso.strftime("%Y-%m-%d")
+                fecha_ingreso.strftime("%Y-%m-%d"),
+                area_id,
+                jefe_id
             )
-            st.success("Trabajador registrado correctamente y periodos generados.")
+            st.success("Trabajador registrado y periodos generados.")
 
     st.subheader("Trabajadores registrados")
-    trabajadores = listar_trabajadores()
-    if trabajadores:
-        st.dataframe(pd.DataFrame(trabajadores))
+    df_trab = listar_trabajadores()
+    if not df_trab.empty:
+        st.dataframe(df_trab.rename(columns={
+            "id": "ID",
+            "numero": "N°",
+            "dni": "DNI",
+            "nombres": "Apellidos y Nombres",
+            "cargo": "Cargo",
+            "regimen": "Régimen",
+            "fecha_ingreso": "Fecha de ingreso",
+            "area": "Área",
+            "unidad": "Unidad",
+            "direccion": "Dirección",
+            "jefe": "Jefe inmediato"
+        }))
     else:
-        st.info("No hay trabajadores registrados.")
-
-
-# ---------------------------------------------------------
-# UI: RESOLUCIONES (NO descuentan días)
-# ---------------------------------------------------------
-
-elif menu == "Resoluciones":
-    st.header("Registro de Resoluciones (NO descuentan días)")
-
-    trabajadores = listar_trabajadores()
-    if not trabajadores:
-        st.warning("Primero registre trabajadores.")
-    else:
-        mapa = {t["nombres"]: t["id"] for t in trabajadores}
-        nombre_sel = st.selectbox("Trabajador", list(mapa.keys()))
-        trabajador_id = mapa[nombre_sel]
-
-        periodos = listar_periodos_con_dias(trabajador_id)
-        if not periodos:
-            st.info("Este trabajador aún no tiene periodos completos.")
-        else:
-            opciones = {
-                f"{p['inicio_ciclo']} - {p['fin_ciclo']} (Tomados: {p['dias_tomados']} días)": p["id"]
-                for p in periodos
-            }
-            etiqueta_periodo = st.selectbox("Periodo", list(opciones.keys()))
-            periodo_id = opciones[etiqueta_periodo]
-
-            numero_resolucion = st.text_input("N° de Resolución")
-            fecha_programada = st.date_input("Fecha programada")
-            dias_autorizados = st.number_input("Días autorizados", min_value=1, max_value=30, value=30)
-            mad = st.text_input("MAD / Referencia")
-            observaciones = st.text_area("Observaciones")
-
-            if st.button("Guardar Resolución"):
-                crear_resolucion(
-                    trabajador_id,
-                    periodo_id,
-                    numero_resolucion,
-                    fecha_programada.strftime("%Y-%m-%d"),
-                    int(dias_autorizados),
-                    mad,
-                    observaciones
-                )
-                st.success("Resolución registrada correctamente (NO descuenta días).")
-
-        st.subheader("Resoluciones del trabajador")
-        resoluciones = listar_resoluciones_por_trabajador(trabajador_id)
-        if resoluciones:
-            st.dataframe(pd.DataFrame(resoluciones))
-        else:
-            st.info("No hay resoluciones registradas.")
-# ---------------------------------------------------------
-# UI: REGISTRAR VACACIONES (SÍ descuentan días)
-# ---------------------------------------------------------
-
-elif menu == "Registrar Vacaciones":
-    st.header("Registrar Vacaciones (Solicitud / Memorando)")
-
-    trabajadores = listar_trabajadores()
-    if not trabajadores:
-        st.warning("Primero registre trabajadores.")
-    else:
-        # Selección de trabajador
-        mapa = {t["nombres"]: t["id"] for t in trabajadores}
-        nombre_sel = st.selectbox("Trabajador", list(mapa.keys()))
-        trabajador_id = mapa[nombre_sel]
-
-        # Periodos del trabajador
-        periodos = listar_periodos_con_dias(trabajador_id)
-        if not periodos:
-            st.info("Este trabajador aún no tiene periodos completos.")
-        else:
-            opciones = {
-                f"{p['inicio_ciclo']} - {p['fin_ciclo']} (Tomados: {p['dias_tomados']} días)": p
-                for p in periodos
-            }
-            etiqueta_periodo = st.selectbox("Periodo", list(opciones.keys()))
-            periodo = opciones[etiqueta_periodo]
-            periodo_id = periodo["id"]
-
-            # Datos de la vacación
-            tipo = st.radio("Tipo de registro", ["Solicitud", "Memorando"])
-            fecha_inicio = st.date_input("Fecha Inicio")
-            dias = st.number_input("N° de días", min_value=1, max_value=30, value=7)
-            documento = st.text_input("Documento")
-            mad = st.text_input("MAD / Referencia")
-            observaciones = st.text_area("Observaciones")
-            fraccionamiento = st.checkbox("¿Hay acuerdo de fraccionamiento?")
-            integro = st.checkbox("¿Gozará íntegro de 30 días?")
-
-            if st.button("Guardar Vacaciones"):
-                # Validación de fraccionamiento
-                if not validar_fraccionamiento(int(dias), fraccionamiento):
-                    st.error("Sin fraccionamiento, el mínimo es 7 días continuos.")
-                # Validación de espacio en el periodo
-                elif not periodo_tiene_espacio(periodo, int(dias)):
-                    st.error("Este periodo ya alcanzó o superaría los 30 días.")
-                else:
-                    fecha_fin = calcular_fecha_fin(fecha_inicio, int(dias))
-                    crear_vacacion(
-                        trabajador_id,
-                        periodo_id,
-                        tipo,
-                        fecha_inicio.strftime("%Y-%m-%d"),
-                        fecha_fin.strftime("%Y-%m-%d"),
-                        int(dias),
-                        documento,
-                        mad,
-                        observaciones,
-                        fraccionamiento,
-                        integro
-                    )
-                    st.success("Vacaciones registradas correctamente.")
-
-        # Mostrar vacaciones del trabajador
-        st.subheader("Vacaciones del trabajador")
-        vacaciones = listar_vacaciones_por_trabajador(trabajador_id)
-        if vacaciones:
-            st.dataframe(pd.DataFrame(vacaciones))
-        else:
-            st.info("No hay vacaciones registradas.")
-
+        st.info("No hay trabajadores registrados aún.")
+# =========================================================
+# =====================  BLOQUE 5  ========================
+# ========== RESOLUCIONES Y PROGRAMACIÓN DE VACACIONES ====
+# =========================================================
 
 # ---------------------------------------------------------
-# UI: DASHBOARD
+# CÁLCULOS Y VALIDACIONES
 # ---------------------------------------------------------
 
-elif menu == "Dashboard":
-    st.header("📊 Dashboard General")
+def calcular_fecha_fin(fecha_inicio: datetime.date, dias: int) -> datetime.date:
+    return fecha_inicio + datetime.timedelta(days=dias - 1)
 
-    hoy = datetime.date.today()
-    todas = listar_todas_vacaciones_con_trabajador()
+def validar_fraccionamiento(dias: int) -> bool:
+    return dias >= 7
 
-    if not todas:
-        st.info("No hay vacaciones registradas.")
-    else:
-        df = pd.DataFrame(todas)
-        df["fecha_inicio"] = pd.to_datetime(df["fecha_inicio"])
-        df["fecha_fin"] = pd.to_datetime(df["fecha_fin"])
+def obtener_dias_resolucion_restantes(resolucion_id):
+    conn = get_conn()
+    cur = conn.cursor()
 
-        # ----------------------------------------------
-        # Vacaciones registradas
-        # ----------------------------------------------
-        st.subheader("📋 Vacaciones registradas")
-        st.dataframe(df[[
-            "trabajador", "regimen", "inicio_ciclo", "fin_ciclo",
-            "tipo", "fecha_inicio", "fecha_fin", "dias", "documento", "mad"
-        ]])
+    # Días autorizados
+    cur.execute("SELECT dias_autorizados FROM resoluciones WHERE id = ?", (resolucion_id,))
+    row = cur.fetchone()
+    if not row:
+        return 0
+    autorizados = row["dias_autorizados"]
 
-        # ----------------------------------------------
-        # Vacaciones en curso
-        # ----------------------------------------------
-        en_curso = df[
-            (df["fecha_inicio"].dt.date <= hoy) &
-            (df["fecha_fin"].dt.date >= hoy)
-        ]
+    # Días ya usados
+    cur.execute("""
+        SELECT IFNULL(SUM(dias), 0) AS usados
+        FROM vacaciones
+        WHERE mad = ? AND tipo = 'Resolución'
+    """, (resolucion_id,))
+    usados = cur.fetchone()["usados"]
 
-        st.subheader("🟢 Vacaciones en curso (hoy)")
-        if not en_curso.empty:
-            st.dataframe(en_curso)
-        else:
-            st.info("No hay vacaciones en curso hoy.")
+    conn.close()
+    return max(0, autorizados - usados)
 
-        # ----------------------------------------------
-        # Próximos 30 días
-        # ----------------------------------------------
-        proximos_30 = df[
-            (df["fecha_inicio"].dt.date > hoy) &
-            (df["fecha_inicio"].dt.date <= hoy + datetime.timedelta(days=30))
-        ]
+def obtener_dias_periodo_restantes(periodo_id):
+    conn = get_conn()
+    cur = conn.cursor()
 
-        st.subheader("🟡 Vacaciones que inician en los próximos 30 días")
-        if not proximos_30.empty:
-            st.dataframe(proximos_30)
-        else:
-            st.info("No hay vacaciones próximas a iniciar en 30 días.")
+    cur.execute("SELECT 30 - IFNULL((SELECT SUM(dias) FROM vacaciones WHERE periodo_id = ?), 0) AS restantes", (periodo_id,))
+    restantes = cur.fetchone()["restantes"]
 
-        # ----------------------------------------------
-        # Periodos vencidos (2 periodos sin usar)
-        # ----------------------------------------------
-        st.subheader("🔴 Periodos vencidos (2 periodos completos sin usar)")
+    conn.close()
+    return max(0, restantes)
 
-        vencidos = listar_todos_trabajadores_con_periodos_no_usados()
-        if vencidos:
-            filas = []
-            for t, periodos_no_usados in vencidos:
-                p0 = periodos_no_usados[0]
-                filas.append({
-                    "Trabajador": t["nombres"],
-                    "Régimen": t["regimen"],
-                    "Periodo más antiguo": f"{p0['inicio_ciclo']} - {p0['fin_ciclo']}",
-                    "N° periodos no usados": len(periodos_no_usados)
-                })
-            st.dataframe(pd.DataFrame(filas))
-        else:
-            st.info("No hay trabajadores con 2 periodos completos sin usar.")
 # ---------------------------------------------------------
-# UI: REPORTE POR TRABAJADOR
+# REGISTRO DE RESOLUCIONES
 # ---------------------------------------------------------
 
-elif menu == "Reporte de Trabajadores":
-    st.header("📑 Reporte por Trabajador")
+if menu == "Reporte de Trabajadores":
+    st.header("Reporte de Trabajadores")
+    df = listar_trabajadores()
+    st.dataframe(df)
 
-    trabajadores = listar_trabajadores()
-    if not trabajadores:
+# ---------------------------------------------------------
+# RESOLUCIONES
+# ---------------------------------------------------------
+
+if menu == "Resoluciones":
+    st.header("Registro de Resoluciones")
+
+    df_trab = listar_trabajadores()
+    if df_trab.empty:
         st.warning("No hay trabajadores registrados.")
-    else:
-        # Selección de trabajador
-        mapa = {t["nombres"]: t["id"] for t in trabajadores}
-        nombre_sel = st.selectbox("Trabajador", list(mapa.keys()))
-        trabajador_id = mapa[nombre_sel]
+        st.stop()
 
-        # -------------------------
-        # Periodos del trabajador
-        # -------------------------
-        st.subheader("Periodos")
-        periodos = listar_periodos_con_dias(trabajador_id)
-        if periodos:
-            st.dataframe(pd.DataFrame(periodos))
-        else:
-            st.info("No hay periodos generados.")
+    mapa_trab = {row["nombres"]: row["id"] for _, row in df_trab.iterrows()}
+    trab_sel = st.selectbox("Seleccione trabajador", list(mapa_trab.keys()))
+    trabajador_id = mapa_trab[trab_sel]
 
-        # -------------------------
-        # Vacaciones del trabajador
-        # -------------------------
-        st.subheader("Vacaciones tomadas")
-        vacaciones = listar_vacaciones_por_trabajador(trabajador_id)
-        if vacaciones:
-            st.dataframe(pd.DataFrame(vacaciones))
-        else:
-            st.info("No hay vacaciones registradas.")
+    df_periodos = listar_periodos_con_dias(trabajador_id)
+    if df_periodos.empty:
+        st.warning("El trabajador no tiene periodos generados.")
+        st.stop()
 
-        # -------------------------
-        # Resoluciones del trabajador
-        # -------------------------
-        st.subheader("Resoluciones")
-        resoluciones = listar_resoluciones_por_trabajador(trabajador_id)
-        if resoluciones:
-            st.dataframe(pd.DataFrame(resoluciones))
-        else:
-            st.info("No hay resoluciones registradas.")
+    mapa_periodos = {
+        f"{row['inicio_ciclo']} a {row['fin_ciclo']} (usados: {row['dias_tomados']})": row["id"]
+        for _, row in df_periodos.iterrows()
+    }
+    periodo_sel = st.selectbox("Periodo", list(mapa_periodos.keys()))
+    periodo_id = mapa_periodos[periodo_sel]
 
+    numero_res = st.text_input("Número de resolución")
+    fecha_prog = st.date_input("Fecha programada")
+    dias_aut = st.number_input("Días autorizados", min_value=1, max_value=30)
+    mad = st.text_input("MAD / Documento")
+    obs = st.text_area("Observaciones")
+
+    if st.button("Registrar Resolución"):
+        crear_resolucion(
+            trabajador_id,
+            periodo_id,
+            numero_res,
+            fecha_prog.strftime("%Y-%m-%d"),
+            dias_aut,
+            mad,
+            obs
+        )
+        st.success("Resolución registrada correctamente.")
+
+    st.subheader("Resoluciones registradas")
+    df_res = listar_resoluciones_por_trabajador(trabajador_id)
+    st.dataframe(df_res)
 
 # ---------------------------------------------------------
-# UI: ADMINISTRAR REGISTROS
+# PROGRAMACIÓN DE VACACIONES
 # ---------------------------------------------------------
 
-elif menu == "Administrar Registros":
-    st.header("Administrar Trabajadores y Registros")
+if menu == "Registrar Vacaciones":
+    st.header("Programación de Vacaciones")
 
-    trabajadores = listar_trabajadores()
-    if not trabajadores:
+    df_trab = listar_trabajadores()
+    if df_trab.empty:
         st.warning("No hay trabajadores registrados.")
-    else:
-        # Selección de trabajador
-        mapa = {t["nombres"]: t for t in trabajadores}
-        nombre_sel = st.selectbox("Trabajador", list(mapa.keys()))
-        t = mapa[nombre_sel]
+        st.stop()
 
-        # -------------------------
-        # EDITAR TRABAJADOR
-        # -------------------------
-        st.subheader("Editar trabajador")
+    mapa_trab = {row["nombres"]: row["id"] for _, row in df_trab.iterrows()}
+    trab_sel = st.selectbox("Seleccione trabajador", list(mapa_trab.keys()))
+    trabajador_id = mapa_trab[trab_sel]
 
-        nuevo_numero = st.text_input("N°", value=t["numero"] or "")
-        nuevo_dni = st.text_input("DNI", value=t["dni"] or "")
-        nuevo_nombre = st.text_input("Nombres", value=t["nombres"])
+    df_periodos = listar_periodos_con_dias(trabajador_id)
+    mapa_periodos = {
+        f"{row['inicio_ciclo']} a {row['fin_ciclo']} (usados: {row['dias_tomados']})": row["id"]
+        for _, row in df_periodos.iterrows()
+    }
+    periodo_sel = st.selectbox("Periodo", list(mapa_periodos.keys()))
+    periodo_id = mapa_periodos[periodo_sel]
 
-        regimenes = [
-            "Decreto Legislativo N° 1057",
-            "Decreto Legislativo N° 276",
-            "Decreto Legislativo N° 728",
-            "Carrera Especial"
-        ]
-        nuevo_regimen = st.selectbox("Régimen", regimenes, index=regimenes.index(t["regimen"]))
+    tipo = st.selectbox("Tipo de programación", ["Solicitud", "Memorando", "Resolución"])
 
-        fecha_ingreso = datetime.datetime.strptime(t["fecha_ingreso"], "%Y-%m-%d").date()
-        nueva_fecha_ingreso = st.date_input("Fecha de ingreso", value=fecha_ingreso)
+    autorizado_res = st.checkbox("Autorizado por Resolución")
 
-        if st.button("Guardar cambios del trabajador"):
-            actualizar_trabajador(
-                t["id"],
-                nuevo_numero,
-                nuevo_dni,
-                nuevo_nombre,
-                nuevo_regimen,
-                nueva_fecha_ingreso.strftime("%Y-%m-%d")
-            )
-            st.success("Trabajador actualizado. (Recarga la página para ver cambios).")
+    df_res = listar_resoluciones_por_trabajador(trabajador_id)
+    resolucion_id = None
 
-        # -------------------------
-        # BORRAR TRABAJADOR
-        # -------------------------
-        if st.button("Borrar trabajador y todos sus registros"):
-            borrar_trabajador(t["id"])
-            st.success("Trabajador eliminado completamente.")
+    if autorizado_res:
+        if df_res.empty:
+            st.error("No hay resoluciones registradas para este trabajador.")
             st.stop()
 
-        st.markdown("---")
+        mapa_res = {
+            f"{row['numero_resolucion']} - {row['dias_autorizados']} días": row["id"]
+            for _, row in df_res.iterrows()
+        }
+        res_sel = st.selectbox("Seleccione resolución", list(mapa_res.keys()))
+        resolucion_id = mapa_res[res_sel]
 
-        # -------------------------
-        # BORRAR VACACIONES INDIVIDUALES
-        # -------------------------
-        st.subheader("Borrar vacaciones individuales")
+        dias_rest_res = obtener_dias_resolucion_restantes(resolucion_id)
+        st.info(f"Días restantes en resolución: {dias_rest_res}")
 
-        vacaciones = listar_vacaciones_por_trabajador(t["id"])
-        if vacaciones:
-            dfv = pd.DataFrame(vacaciones)
-            st.dataframe(dfv)
+    fecha_inicio = st.date_input("Fecha de inicio")
+    dias = st.number_input("Días solicitados", min_value=1, max_value=30)
 
-            ids = [v["id"] for v in vacaciones]
-            id_sel = st.selectbox("ID de vacación a borrar", ids)
+    fecha_fin = calcular_fecha_fin(fecha_inicio, dias)
+    st.write(f"Fecha fin: **{fecha_fin}**")
 
-            if st.button("Borrar vacación seleccionada"):
-                borrar_vacacion(id_sel)
-                st.success("Vacación borrada.")
-        else:
-            st.info("No hay vacaciones para este trabajador.")
+    # Validaciones
+    dias_rest_periodo = obtener_dias_periodo_restantes(periodo_id)
+    st.info(f"Días restantes en periodo: {dias_rest_periodo}")
 
-        st.markdown("---")
-
-        # -------------------------
-        # BORRAR RESOLUCIONES INDIVIDUALES
-        # -------------------------
-        st.subheader("Borrar resoluciones individuales")
-
-        resoluciones = listar_resoluciones_por_trabajador(t["id"])
-        if resoluciones:
-            dfr = pd.DataFrame(resoluciones)
-            st.dataframe(dfr)
-
-            ids_r = [r["id"] for r in resoluciones]
-            idr_sel = st.selectbox("ID de resolución a borrar", ids_r)
-
-            if st.button("Borrar resolución seleccionada"):
-                borrar_resolucion(idr_sel)
-                st.success("Resolución borrada.")
-        else:
-            st.info("No hay resoluciones para este trabajador.")
-# ---------------------------------------------------------
-# UI: PANEL DE CONTROL
-# ---------------------------------------------------------
-
-elif menu == "Panel de Control":
-    st.header("⚙️ Panel de Control del Sistema")
-
-    # ----------------------------------------------
-    # DESCARGAR BASE DE DATOS SQLITE
-    # ----------------------------------------------
-    st.subheader("📥 Descargar base de datos SQLite")
-
-    db_bytes = db_file_bytes()
-    if db_bytes:
-        st.download_button(
-            "Descargar vacaciones.db",
-            data=db_bytes,
-            file_name="vacaciones.db",
-            mime="application/octet-stream"
-        )
+    if autorizado_res:
+        if dias > dias_rest_res:
+            st.error("Los días solicitados exceden los días autorizados por la resolución.")
+            st.stop()
     else:
-        st.info("Aún no existe archivo de base de datos.")
+        if dias < 7:
+            st.warning("Fraccionamiento: menos de 7 días.")
+        if dias > dias_rest_periodo:
+            st.error("Los días solicitados exceden los días disponibles del periodo.")
+            st.stop()
 
-    st.markdown("---")
+    jefe_aut = st.selectbox("Jefe que autoriza", df_trab["jefe"].unique())
+    autorizado_rrhh = st.checkbox("Autorizado por RRHH")
 
-    # ----------------------------------------------
-    # EXPORTAR TABLAS A CSV
-    # ----------------------------------------------
-    st.subheader("📤 Exportar tablas a CSV")
+    if st.button("Registrar Vacación"):
+        crear_vacacion(
+            trabajador_id,
+            periodo_id,
+            tipo,
+            fecha_inicio.strftime("%Y-%m-%d"),
+            fecha_fin.strftime("%Y-%m-%d"),
+            dias,
+            resolucion_id,
+            None,
+            "",
+            not autorizado_res and dias < 7,
+            not autorizado_res and dias == 30,
+            trabajador_id,
+            autorizado_rrhh
+        )
+        st.success("Vacación registrada correctamente.")
 
-    tablas = ["trabajadores", "periodos", "resoluciones", "vacaciones"]
+    st.subheader("Vacaciones registradas")
+    df_vac = listar_vacaciones_por_trabajador(trabajador_id)
+    st.dataframe(df_vac)
+# =========================================================
+# =====================  BLOQUE 6  ========================
+# =====================   DASHBOARD   =====================
+# =========================================================
 
-    for tabla in tablas:
-        st.write(f"Tabla: **{tabla}**")
-        if st.button(f"Generar CSV de {tabla}"):
-            csv_bytes = exportar_tabla_csv(tabla)
-            st.download_button(
-                f"Descargar {tabla}.csv",
-                data=csv_bytes,
-                file_name=f"{tabla}.csv",
-                mime="text/csv"
-            )
+if menu == "Dashboard":
+    st.header("Dashboard General de Vacaciones")
 
-    st.markdown("---")
+    # -----------------------------------------------------
+    # Cargar datos base
+    # -----------------------------------------------------
+    df_trab = listar_trabajadores()
+    if df_trab.empty:
+        st.warning("No hay trabajadores registrados.")
+        st.stop()
 
-    # ----------------------------------------------
-    # RESET TOTAL DEL SISTEMA
-    # ----------------------------------------------
-    st.subheader("🧨 Resetear TODO el sistema")
+    # Cargar periodos
+    conn = get_conn()
+    df_periodos = pd.read_sql_query("""
+        SELECT p.*, 
+               t.nombres AS trabajador,
+               a.nombre AS area,
+               u.nombre AS unidad,
+               d.nombre AS direccion,
+               IFNULL((SELECT SUM(v.dias) FROM vacaciones v WHERE v.periodo_id = p.id), 0) AS dias_tomados
+        FROM periodos p
+        JOIN trabajadores t ON t.id = p.trabajador_id
+        JOIN areas a ON a.id = t.area_id
+        JOIN unidades u ON u.id = a.unidad_id
+        JOIN direcciones d ON d.id = u.direccion_id
+        ORDER BY p.inicio_ciclo
+    """, conn)
+    conn.close()
 
-    st.warning(
-        "Esta acción borrará **TODOS** los trabajadores, periodos, resoluciones y vacaciones.\n"
-        "No se puede deshacer."
+    # -----------------------------------------------------
+    # FILTROS
+    # -----------------------------------------------------
+    st.subheader("Filtros")
+
+    direcciones = sorted(df_periodos["direccion"].unique())
+    direccion_sel = st.selectbox("Dirección", ["Todas"] + direcciones)
+
+    if direccion_sel != "Todas":
+        df_periodos = df_periodos[df_periodos["direccion"] == direccion_sel]
+
+    unidades = sorted(df_periodos["unidad"].unique())
+    unidad_sel = st.selectbox("Unidad", ["Todas"] + unidades)
+
+    if unidad_sel != "Todas":
+        df_periodos = df_periodos[df_periodos["unidad"] == unidad_sel]
+
+    areas = sorted(df_periodos["area"].unique())
+    area_sel = st.selectbox("Área", ["Todas"] + areas)
+
+    if area_sel != "Todas":
+        df_periodos = df_periodos[df_periodos["area"] == area_sel]
+
+    # -----------------------------------------------------
+    # Cálculos de estado de periodos
+    # -----------------------------------------------------
+    hoy = datetime.date.today()
+
+    df_periodos["goce_hasta_date"] = df_periodos["goce_hasta"].apply(to_date)
+    df_periodos["acumulable_hasta_date"] = df_periodos["acumulable_hasta"].apply(to_date)
+
+    df_periodos["estado"] = df_periodos.apply(
+        lambda row: "Vencido" if hoy > row["acumulable_hasta_date"]
+        else ("Por vencer" if hoy > row["goce_hasta_date"] else "Vigente"),
+        axis=1
     )
 
-    confirm = st.text_input("Escriba exactamente: QUIERO RESETEAR TODO")
+    # -----------------------------------------------------
+    # RESUMEN EJECUTIVO
+    # -----------------------------------------------------
+    st.subheader("Resumen Ejecutivo")
 
-    if st.button("Resetear base de datos"):
-        if confirm.strip() == "QUIERO RESETEAR TODO":
-            resetear_todo()
-            st.success("Base de datos reseteada correctamente. Reinicie la aplicación.")
+    total_trab = df_trab.shape[0]
+    total_periodos = df_periodos.shape[0]
+    vencidos = df_periodos[df_periodos["estado"] == "Vencido"].shape[0]
+    por_vencer = df_periodos[df_periodos["estado"] == "Por vencer"].shape[0]
+
+    col1, col2, col3, col4 = st.columns(4)
+    col1.metric("Trabajadores", total_trab)
+    col2.metric("Periodos", total_periodos)
+    col3.metric("Periodos Vencidos", vencidos)
+    col4.metric("Por Vencer", por_vencer)
+
+    st.markdown("---")
+
+    # -----------------------------------------------------
+    # PERIODOS VENCIDOS
+    # -----------------------------------------------------
+    st.subheader("Periodos Vencidos")
+
+    df_vencidos = df_periodos[df_periodos["estado"] == "Vencido"]
+    if df_vencidos.empty:
+        st.info("No hay periodos vencidos.")
+    else:
+        st.dataframe(df_vencidos[[
+            "trabajador", "direccion", "unidad", "area",
+            "inicio_ciclo", "fin_ciclo", "goce_hasta", "acumulable_hasta",
+            "dias_tomados"
+        ]])
+
+    st.markdown("---")
+
+    # -----------------------------------------------------
+    # PERIODOS POR VENCER
+    # -----------------------------------------------------
+    st.subheader("Periodos por Vencer")
+
+    df_por_vencer = df_periodos[df_periodos["estado"] == "Por vencer"]
+    if df_por_vencer.empty:
+        st.info("No hay periodos por vencer.")
+    else:
+        st.dataframe(df_por_vencer[[
+            "trabajador", "direccion", "unidad", "area",
+            "inicio_ciclo", "fin_ciclo", "goce_hasta", "acumulable_hasta",
+            "dias_tomados"
+        ]])
+
+    st.markdown("---")
+
+    # -----------------------------------------------------
+    # TRABAJADORES CON DÍAS PENDIENTES
+    # -----------------------------------------------------
+    st.subheader("Trabajadores con días pendientes")
+
+    df_periodos["dias_pendientes"] = 30 - df_periodos["dias_tomados"]
+    df_pendientes = df_periodos[df_periodos["dias_pendientes"] > 0]
+
+    if df_pendientes.empty:
+        st.info("Todos los trabajadores han usado sus días.")
+    else:
+        st.dataframe(df_pendientes[[
+            "trabajador", "direccion", "unidad", "area",
+            "inicio_ciclo", "fin_ciclo", "dias_tomados", "dias_pendientes"
+        ]])
+
+    st.markdown("---")
+
+    # -----------------------------------------------------
+    # TABLA COMPLETA
+    # -----------------------------------------------------
+    st.subheader("Tabla Completa de Periodos")
+
+    st.dataframe(df_periodos[[
+        "trabajador", "direccion", "unidad", "area",
+        "inicio_ciclo", "fin_ciclo", "goce_hasta", "acumulable_hasta",
+        "dias_tomados", "estado"
+    ]])
+# =========================================================
+# =====================  BLOQUE 7  ========================
+# =====================   REPORTES   ======================
+# =========================================================
+
+if menu == "Reportes":
+    st.header("Reportes Avanzados de Vacaciones")
+
+    # -----------------------------------------------------
+    # Cargar datos base
+    # -----------------------------------------------------
+    df_trab = listar_trabajadores()
+    if df_trab.empty:
+        st.warning("No hay trabajadores registrados.")
+        st.stop()
+
+    conn = get_conn()
+    df_periodos = pd.read_sql_query("""
+        SELECT p.*, 
+               t.nombres AS trabajador,
+               t.dni,
+               t.cargo,
+               a.nombre AS area,
+               u.nombre AS unidad,
+               d.nombre AS direccion,
+               IFNULL((SELECT SUM(v.dias) FROM vacaciones v WHERE v.periodo_id = p.id), 0) AS dias_tomados
+        FROM periodos p
+        JOIN trabajadores t ON t.id = p.trabajador_id
+        JOIN areas a ON a.id = t.area_id
+        JOIN unidades u ON u.id = a.unidad_id
+        JOIN direcciones d ON d.id = u.direccion_id
+        ORDER BY d.nombre, u.nombre, a.nombre, t.nombres
+    """, conn)
+
+    df_vac = pd.read_sql_query("""
+        SELECT v.*, 
+               t.nombres AS trabajador,
+               t.dni,
+               a.nombre AS area,
+               u.nombre AS unidad,
+               d.nombre AS direccion,
+               p.inicio_ciclo,
+               p.fin_ciclo
+        FROM vacaciones v
+        JOIN trabajadores t ON t.id = v.trabajador_id
+        JOIN periodos p ON p.id = v.periodo_id
+        JOIN areas a ON a.id = t.area_id
+        JOIN unidades u ON u.id = a.unidad_id
+        JOIN direcciones d ON d.id = u.direccion_id
+        ORDER BY v.fecha_inicio
+    """, conn)
+
+    df_res = pd.read_sql_query("""
+        SELECT r.*, 
+               t.nombres AS trabajador,
+               t.dni,
+               a.nombre AS area,
+               u.nombre AS unidad,
+               d.nombre AS direccion,
+               p.inicio_ciclo,
+               p.fin_ciclo
+        FROM resoluciones r
+        JOIN trabajadores t ON t.id = r.trabajador_id
+        JOIN periodos p ON p.id = r.periodo_id
+        JOIN areas a ON a.id = t.area_id
+        JOIN unidades u ON u.id = a.unidad_id
+        JOIN direcciones d ON d.id = u.direccion_id
+        ORDER BY r.fecha_programada
+    """, conn)
+    conn.close()
+
+    # -----------------------------------------------------
+    # Filtros principales
+    # -----------------------------------------------------
+    st.subheader("Filtros")
+
+    direcciones = sorted(df_periodos["direccion"].unique())
+    direccion_sel = st.selectbox("Dirección", ["Todas"] + direcciones)
+
+    if direccion_sel != "Todas":
+        df_periodos = df_periodos[df_periodos["direccion"] == direccion_sel]
+        df_vac = df_vac[df_vac["direccion"] == direccion_sel]
+        df_res = df_res[df_res["direccion"] == direccion_sel]
+
+    unidades = sorted(df_periodos["unidad"].unique())
+    unidad_sel = st.selectbox("Unidad", ["Todas"] + unidades)
+
+    if unidad_sel != "Todas":
+        df_periodos = df_periodos[df_periodos["unidad"] == unidad_sel]
+        df_vac = df_vac[df_vac["unidad"] == unidad_sel]
+        df_res = df_res[df_res["unidad"] == unidad_sel]
+
+    areas = sorted(df_periodos["area"].unique())
+    area_sel = st.selectbox("Área", ["Todas"] + areas)
+
+    if area_sel != "Todas":
+        df_periodos = df_periodos[df_periodos["area"] == area_sel]
+        df_vac = df_vac[df_vac["area"] == area_sel]
+        df_res = df_res[df_res["area"] == area_sel]
+
+    # -----------------------------------------------------
+    # REPORTE 1: Periodos
+    # -----------------------------------------------------
+    st.markdown("---")
+    st.subheader("Reporte de Periodos")
+
+    df_periodos["dias_pendientes"] = 30 - df_periodos["dias_tomados"]
+
+    st.dataframe(df_periodos[[
+        "trabajador", "dni", "cargo",
+        "direccion", "unidad", "area",
+        "inicio_ciclo", "fin_ciclo",
+        "goce_hasta", "acumulable_hasta",
+        "dias_tomados", "dias_pendientes"
+    ]])
+
+    st.download_button(
+        "Exportar Periodos (CSV)",
+        df_periodos.to_csv(index=False).encode("utf-8"),
+        "periodos.csv",
+        "text/csv"
+    )
+
+    # -----------------------------------------------------
+    # REPORTE 2: Vacaciones
+    # -----------------------------------------------------
+    st.markdown("---")
+    st.subheader("Reporte de Vacaciones")
+
+    if df_vac.empty:
+        st.info("No hay vacaciones registradas con los filtros seleccionados.")
+    else:
+        st.dataframe(df_vac[[
+            "trabajador", "dni",
+            "direccion", "unidad", "area",
+            "tipo", "fecha_inicio", "fecha_fin",
+            "dias", "documento", "mad", "observaciones"
+        ]])
+
+        st.download_button(
+            "Exportar Vacaciones (CSV)",
+            df_vac.to_csv(index=False).encode("utf-8"),
+            "vacaciones.csv",
+            "text/csv"
+        )
+
+    # -----------------------------------------------------
+    # REPORTE 3: Resoluciones
+    # -----------------------------------------------------
+    st.markdown("---")
+    st.subheader("Reporte de Resoluciones")
+
+    if df_res.empty:
+        st.info("No hay resoluciones registradas con los filtros seleccionados.")
+    else:
+        st.dataframe(df_res[[
+            "trabajador", "dni",
+            "direccion", "unidad", "area",
+            "numero_resolucion", "fecha_programada",
+            "dias_autorizados", "mad", "observaciones"
+        ]])
+
+        st.download_button(
+            "Exportar Resoluciones (CSV)",
+            df_res.to_csv(index=False).encode("utf-8"),
+            "resoluciones.csv",
+            "text/csv"
+        )
+
+    # -----------------------------------------------------
+    # REPORTE 4: Consolidado por Trabajador
+    # -----------------------------------------------------
+    st.markdown("---")
+    st.subheader("Consolidado por Trabajador")
+
+    trabajadores = sorted(df_periodos["trabajador"].unique())
+    trab_sel = st.selectbox("Seleccione trabajador", trabajadores)
+
+    df_p = df_periodos[df_periodos["trabajador"] == trab_sel]
+    df_v = df_vac[df_vac["trabajador"] == trab_sel]
+    df_r = df_res[df_res["trabajador"] == trab_sel]
+
+    st.write("### Periodos")
+    st.dataframe(df_p)
+
+    st.write("### Vacaciones")
+    st.dataframe(df_v)
+
+    st.write("### Resoluciones")
+    st.dataframe(df_r)
+
+    st.download_button(
+        "Exportar Consolidado (CSV)",
+        pd.concat([df_p, df_v, df_r], axis=0).to_csv(index=False).encode("utf-8"),
+        "consolidado_trabajador.csv",
+        "text/csv"
+    )
+# =========================================================
+# =====================  BLOQUE 8  ========================
+# ================== PANEL DE CONTROL ADMIN ===============
+# =========================================================
+
+if menu == "Gestión de Usuarios":
+    st.header("Gestión de Usuarios del Sistema")
+
+    if ROL != "admin":
+        st.error("Solo el administrador puede gestionar usuarios.")
+        st.stop()
+
+    st.subheader("Usuarios Registrados")
+
+    df_users = listar_usuarios()
+    st.dataframe(df_users.rename(columns={
+        "id": "ID",
+        "usuario": "Usuario",
+        "rol": "Rol"
+    }))
+
+    st.markdown("---")
+
+    # -----------------------------------------------------
+    # CREAR NUEVO USUARIO
+    # -----------------------------------------------------
+    st.subheader("Crear Nuevo Usuario")
+
+    nuevo_usuario = st.text_input("Nuevo usuario")
+    nuevo_password = st.text_input("Contraseña", type="password")
+    nuevo_rol = st.selectbox("Rol", ["admin", "responsable", "registrador"])
+
+    if st.button("Registrar Usuario"):
+        if not nuevo_usuario.strip() or not nuevo_password.strip():
+            st.error("Debe ingresar usuario y contraseña.")
         else:
-            st.error("Confirmación incorrecta. No se realizó el reset.")
+            try:
+                crear_usuario(nuevo_usuario.strip(), nuevo_password.strip(), nuevo_rol)
+                st.success("Usuario creado correctamente.")
+                st.experimental_rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    st.markdown("---")
+
+    # -----------------------------------------------------
+    # CAMBIAR ROL DE USUARIO
+    # -----------------------------------------------------
+    st.subheader("Cambiar Rol de Usuario")
+
+    if not df_users.empty:
+        mapa_users = {row["usuario"]: row["id"] for _, row in df_users.iterrows()}
+        user_sel = st.selectbox("Seleccione usuario", list(mapa_users.keys()))
+        user_id = mapa_users[user_sel]
+
+        nuevo_rol_sel = st.selectbox("Nuevo rol", ["admin", "responsable", "registrador"])
+
+        if st.button("Actualizar Rol"):
+            actualizar_rol_usuario(user_id, nuevo_rol_sel)
+            st.success("Rol actualizado correctamente.")
+            st.experimental_rerun()
+
+    st.markdown("---")
+
+    # -----------------------------------------------------
+    # ELIMINAR USUARIO
+    # -----------------------------------------------------
+    st.subheader("Eliminar Usuario")
+
+    if not df_users.empty:
+        user_del = st.selectbox("Seleccione usuario a eliminar", list(mapa_users.keys()))
+
+        if st.button("Eliminar Usuario"):
+            if user_del == "admin":
+                st.error("No se puede eliminar el usuario administrador principal.")
+            else:
+                conn = get_conn()
+                cur = conn.cursor()
+                cur.execute("DELETE FROM usuarios WHERE usuario = ?", (user_del,))
+                conn.commit()
+                conn.close()
+                st.success("Usuario eliminado.")
+                st.experimental_rerun()
+
+    st.markdown("---")
+
+# ---------------------------------------------------------
+# RESET DEL SISTEMA
+# ---------------------------------------------------------
+
+if menu == "Reset del Sistema":
+    st.header("Reset Completo del Sistema")
+
+    if ROL != "admin":
+        st.error("Solo el administrador puede resetear el sistema.")
+        st.stop()
+
+    st.warning("⚠ Esta acción eliminará TODA la información del sistema.")
+    st.warning("Incluye: trabajadores, periodos, vacaciones, resoluciones, jefes, áreas, unidades, direcciones y usuarios.")
+
+    confirmar = st.checkbox("Confirmo que deseo resetear el sistema")
+
+    if confirmar and st.button("RESET TOTAL"):
+        resetear_todo()
+        st.success("Sistema reseteado completamente. Usuario admin/admin restaurado.")
+        st.experimental_rerun()
