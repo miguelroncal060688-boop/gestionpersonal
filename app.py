@@ -445,9 +445,9 @@ if "rol" not in st.session_state:
 
 def login():
     st.title("Sistema de Gestión de Vacaciones – DRE Cajamarca")
-    u = st.text_input("Usuario", key="login_usuario")
-    p = st.text_input("Contraseña", type="password", key="login_password")
-    if st.button("Ingresar", key="login_btn"):
+    u = st.text_input("Usuario")
+    p = st.text_input("Contraseña", type="password")
+    if st.button("Ingresar"):
         conn = get_conn()
         row = conn.execute("SELECT * FROM usuarios WHERE usuario=? AND password_hash=?",
                            (u, hash_password(p))).fetchone()
@@ -479,7 +479,7 @@ connp.close()
 # MENU por permisos
 # =========================================================
 MENU_ALL = [
-    ("Organización (Direcciones/Unidades/Áreas/Jefes)", "estructura_ver"),
+    ("Estructura (Direcciones/Unidades/Áreas/Jefes)", "estructura_ver"),
     ("Trabajadores", "trabajadores_ver"),
     ("Resoluciones", "resoluciones_ver"),
     ("Vacaciones", "vacaciones_ver"),
@@ -502,10 +502,10 @@ st.title("Sistema de Gestión de Vacaciones – DRE Cajamarca")
 # =========================================================
 # 1) ESTRUCTURA (tabs)
 # =========================================================
-if menu == "Organización (Direcciones/Unidades/Áreas/Jefes)":
+if menu == "Estructura (Direcciones/Unidades/Áreas/Jefes)":
     editable = can(PERMS, "estructura_editar")
     conn = get_conn()
-    st.header("Organización (Direcciones, Unidades, Áreas y Jefes)")
+    st.header("Estructura Organizacional")
 
     tab_reg, tab_edit, tab_del = st.tabs(["➕ Registrar", "📝 Editar", "🗑️ Eliminar"])
 
@@ -1634,8 +1634,8 @@ elif menu == "Usuarios y Permisos":
 
         st.subheader("Crear usuario")
         with st.form("crear_user", clear_on_submit=True):
-            u = st.text_input("Usuario", key="login_usuario")
-            p = st.text_input("Contraseña", type="password", key="login_password")
+            u = st.text_input("Usuario")
+            p = st.text_input("Contraseña", type="password")
             r = st.selectbox("Rol", ["admin","responsable","registrador"])
             if st.form_submit_button("Crear"):
                 if u.strip() and p.strip():
