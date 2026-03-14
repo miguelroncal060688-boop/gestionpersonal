@@ -480,10 +480,10 @@ else:
     ROL = st.session_state["rol"]
 
 # =========================================================
-# MENU por permisos
+# MENU por permisos (FIX NameError PERMS)
 # =========================================================
 MENU_ALL = [
-    ("Estructura (Direcciones/Unidades/Áreas/Jefes)", "estructura_ver"),
+    ("Organización (Direcciones/Unidades/Áreas/Jefes)", "estructura_ver"),
     ("Trabajadores", "trabajadores_ver"),
     ("Resoluciones", "resoluciones_ver"),
     ("Vacaciones", "vacaciones_ver"),
@@ -495,13 +495,18 @@ MENU_ALL = [
     ("Exportar / Backup", "backup_exportar"),
     ("Reset del Sistema", "reset_sistema"),
 ]
-menu_items = [name for name, perm in MENU_ALL if can(PERMS, perm)]
-menu = st.sidebar.radio("Menú", menu_items)
-st.sidebar.write(f"Usuario: {USER} ({ROL})")
-if st.sidebar.button("Cerrar sesión"):
-    logout()
 
-st.title("Sistema de Gestión de Vacaciones – DRE Cajamarca")
+# ✅ PERMISOS SEGUROS (aunque no esté logueado aún)
+if "user" in st.session_state and st.session_state["user"] is not None:
+    connp = get_conn()
+    PERMS = get_user_perms(connp, st.session_state["user"], st.session_state["rol"])
+    connp.close()
+else:
+    PERMS = {}
+
+menu_items = [name for name, perm in MENU_ALL if can(PERMS, perm)]
+
+menu = st.sidebar.radio("Menú", menu_items)
 
 # =========================================================
 # 1) ESTRUCTURA (tabs)
