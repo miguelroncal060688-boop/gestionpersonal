@@ -436,7 +436,7 @@ st.set_page_config(page_title="Vacaciones DRE Cajamarca", layout="wide")
 ensure_schema()
 
 # =========================================================
-# LOGIN
+# LOGIN (FIX DEFINITIVO – NO BORRA CONTRASEÑA)
 # =========================================================
 if "user" not in st.session_state:
     st.session_state["user"] = None
@@ -445,35 +445,39 @@ if "rol" not in st.session_state:
 
 def login():
     st.title("Sistema de Gestión de Vacaciones – DRE Cajamarca")
-    u = st.text_input("Usuario")
-    p = st.text_input("Contraseña", type="password")
-    if st.button("Ingresar"):
+
+    u = st.text_input(
+        "Usuario",
+        key="login_usuario"
+    )
+
+    p = st.text_input(
+        "Contraseña",
+        type="password",
+        key="login_password"
+    )
+
+    if st.button("Ingresar", key="login_btn"):
         conn = get_conn()
-        row = conn.execute("SELECT * FROM usuarios WHERE usuario=? AND password_hash=?",
-                           (u, hash_password(p))).fetchone()
+        row = conn.execute(
+            "SELECT * FROM usuarios WHERE usuario=? AND password_hash=?",
+            (u.strip(), hash_password(p))
+        ).fetchone()
         conn.close()
+
         if row:
             st.session_state["user"] = row["usuario"]
             st.session_state["rol"] = row["rol"]
-            do_rerun()
+            st.rerun()
         else:
             st.error("Usuario o contraseña incorrectos")
 
-def logout():
-    st.session_state["user"] = None
-    st.session_state["rol"] = None
-    do_rerun()
-
 if st.session_state["user"] is None:
     login()
-    st.stop()
-
-USER = st.session_state["user"]
-ROL = st.session_state["rol"]
-
-connp = get_conn()
-PERMS = get_user_perms(connp, USER, ROL)
-connp.close()
+    # ⛔️ NO USAR st.stop() AQUÍ
+else:
+    USER = st.session_state["user"]
+    ROL = st.session_state["rol"]
 
 # =========================================================
 # MENU por permisos
