@@ -7,47 +7,6 @@ import os
 import json
 from typing import Dict, Any
 
-
-# =========================================================
-# AUTO-KEY PATCH (evita StreamlitDuplicateElementId en TODA la app)
-# No cambia tu lógica, solo asegura keys únicos automáticamente.
-# =========================================================
-from functools import wraps
-import inspect
-
-_AUTO_KEY_COUNTER = 0
-
-def _auto_key(widget_name: str) -> str:
-    global _AUTO_KEY_COUNTER
-    _AUTO_KEY_COUNTER += 1
-    frm = inspect.currentframe()
-    lineno = 0
-    try:
-        lineno = frm.f_back.f_back.f_lineno
-    except Exception:
-        lineno = 0
-    return f"auto_{widget_name}_{lineno}_{_AUTO_KEY_COUNTER}"
-
-def _wrap_widget(fn, widget_name: str):
-    @wraps(fn)
-    def _wrapped(*args, **kwargs):
-        if 'key' not in kwargs or kwargs.get('key') is None:
-            kwargs['key'] = _auto_key(widget_name)
-        return fn(*args, **kwargs)
-    return _wrapped
-
-def _patch_container(container, prefix: str):
-    for name in [
-        'text_input','text_area','selectbox','multiselect','radio','checkbox',
-        'date_input','time_input','number_input','slider','button',
-        'download_button','file_uploader','form_submit_button'
-    ]:
-        if hasattr(container, name):
-            setattr(container, name, _wrap_widget(getattr(container, name), f"{prefix}_{name}"))
-
-_patch_container(st, 'st')
-_patch_container(st.sidebar, 'sidebar')
-
 DB_PATH = "vacaciones.db"
 
 # =========================================================
@@ -486,9 +445,7 @@ if "rol" not in st.session_state:
 
 def login():
     st.title("Sistema de Gestión de Vacaciones – DRE Cajamarca")
-    u = st.text_input("Usuario")
-    p = st.text_input("Contraseña", type="password")
-    if st.button("Ingresar"):
+    u = st.text_input(\"Usuario\", key=\"login_usuario\")    p = st.text_input(\"Contraseña\", type=\"password\", key=\"login_password\")    if st.button(\"Ingresar\", key=\"login_btn\"):
         conn = get_conn()
         row = conn.execute("SELECT * FROM usuarios WHERE usuario=? AND password_hash=?",
                            (u, hash_password(p))).fetchone()
@@ -520,7 +477,7 @@ connp.close()
 # MENU por permisos
 # =========================================================
 MENU_ALL = [
-    ("Organización (Direcciones/Unidades/Áreas/Jefes)", "estructura_ver"),
+    ("Estructura (Direcciones/Unidades/Áreas/Jefes)", "estructura_ver"),
     ("Trabajadores", "trabajadores_ver"),
     ("Resoluciones", "resoluciones_ver"),
     ("Vacaciones", "vacaciones_ver"),
@@ -533,7 +490,7 @@ MENU_ALL = [
     ("Reset del Sistema", "reset_sistema"),
 ]
 menu_items = [name for name, perm in MENU_ALL if can(PERMS, perm)]
-menu = st.sidebar.radio("Menú", menu_items)
+menu = st.sidebar.radio("Menú", menu_items, key="main_menu")
 st.sidebar.write(f"Usuario: {USER} ({ROL})")
 if st.sidebar.button("Cerrar sesión"):
     logout()
@@ -543,12 +500,12 @@ st.title("Sistema de Gestión de Vacaciones – DRE Cajamarca")
 # =========================================================
 # 1) ESTRUCTURA (tabs)
 # =========================================================
-if menu == "Organización (Direcciones/Unidades/Áreas/Jefes)":
+if menu == "Estructura (Direcciones/Unidades/Áreas/Jefes)":
     editable = can(PERMS, "estructura_editar")
     conn = get_conn()
-    st.header("Organización (Direcciones, Unidades, Áreas y Jefes)")
+    st.header("Estructura Organizacional")
 
-    tab_reg, tab_edit, tab_del, tab_rep = st.tabs(["➕ Registrar", "📝 Editar", "🗑️ Eliminar", "👥 Jefes y sus trabajadores"])
+    tab_reg, tab_edit, tab_del = st.tabs(["➕ Registrar", "📝 Editar", "🗑️ Eliminar"])
 
     # ---------- Registrar ----------
     with tab_reg:
@@ -719,68 +676,6 @@ if menu == "Organización (Direcciones/Unidades/Áreas/Jefes)":
                     conn.execute("DELETE FROM jefes WHERE id=?", (jid2,))
                     conn.commit()
                     do_rerun()
-
-
-
-    # ---------- Reporte por jefe ----------
-    with tab_rep:
-        st.subheader("Jefes y su personal")
-
-        df_j = pd.read_sql("""
-            SELECT j.id, j.nombres, j.cargo,
-                   a.nombre AS area, u.nombre AS unidad, d.nombre AS direccion
-            FROM jefes j
-            JOIN areas a ON a.id=j.area_id
-            JOIN unidades u ON u.id=a.unidad_id
-            JOIN direcciones d ON d.id=u.direccion_id
-            ORDER BY j.nombres
-        """, conn)
-
-        if df_j.empty:
-            st.info("No hay jefes registrados.")
-        else:
-            q = st.text_input("Buscar jefe (nombre/área)")
-            opciones = [f"{r['nombres']} | {r['area']} | ID:{r['id']}" for _, r in df_j.iterrows()]
-            if q:
-                ql = q.lower().strip()
-                opciones = [o for o in opciones if ql in o.lower()]
-
-            sel = st.selectbox("Seleccione jefe", opciones)
-            jefe_id = int(sel.split("ID:")[-1].strip())
-
-            jefe = df_j[df_j["id"] == jefe_id].iloc[0]
-            st.markdown(
-                f"**Jefe:** {jefe['nombres']}  
-    "
-                f"**Cargo:** {jefe['cargo'] or ''}  
-    "
-                f"**Área:** {jefe['area']}  
-    "
-                f"**Unidad:** {jefe['unidad']}  
-    "
-                f"**Dirección:** {jefe['direccion']}"
-            )
-
-            df_tr = pd.read_sql("""
-                SELECT t.numero, t.dni, t.nombres, t.cargo, t.regimen, t.fecha_ingreso,
-                       a.nombre AS area, u.nombre AS unidad, d.nombre AS direccion
-                FROM trabajadores t
-                JOIN areas a ON a.id=t.area_id
-                JOIN unidades u ON u.id=a.unidad_id
-                JOIN direcciones d ON d.id=u.direccion_id
-                WHERE t.jefe_id=?
-                ORDER BY t.nombres
-            """, conn, params=(jefe_id,))
-
-            st.markdown("### Trabajadores a cargo")
-            st.dataframe(df_tr, use_container_width=True)
-
-            st.download_button(
-                "Descargar CSV (trabajadores del jefe)",
-                df_tr.to_csv(index=False).encode("utf-8"),
-                f"trabajadores_jefe_{jefe_id}.csv",
-                "text/csv"
-            )
 
     conn.close()
 
@@ -1738,7 +1633,7 @@ elif menu == "Usuarios y Permisos":
         st.subheader("Crear usuario")
         with st.form("crear_user", clear_on_submit=True):
             u = st.text_input("Usuario")
-            p = st.text_input("Contraseña", type="password")
+            p = st.text_input("Contraseña", type="password", key="crear_user_pass")
             r = st.selectbox("Rol", ["admin","responsable","registrador"])
             if st.form_submit_button("Crear"):
                 if u.strip() and p.strip():
