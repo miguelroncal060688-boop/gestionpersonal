@@ -40,7 +40,7 @@ def _patch_container(container, prefix: str):
     for name in [
         'text_input','text_area','selectbox','multiselect','radio','checkbox',
         'date_input','time_input','number_input','slider','button',
-        'download_button','file_uploader','form_submit_button'
+        'download_button','file_uploader'
     ]:
         if hasattr(container, name):
             setattr(container, name, _wrap_widget(getattr(container, name), f"{prefix}_{name}"))
