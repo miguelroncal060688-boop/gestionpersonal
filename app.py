@@ -693,8 +693,8 @@ elif menu == "Trabajadores":
 
 
 
-# Base listado de trabajadores (VISIBLE PARA TODOS LOS TABS)
-df_trab = pd.read_sql("""
+    # Base listado de trabajadores (VISIBLE PARA TODOS LOS TABS)
+    df_trab = pd.read_sql("""
     SELECT t.id,t.numero,t.dni,t.nombres,t.cargo,t.regimen,t.fecha_ingreso,
            a.nombre AS area,u.nombre AS unidad,d.nombre AS direccion,
            j.nombres AS jefe
@@ -704,7 +704,7 @@ df_trab = pd.read_sql("""
     JOIN direcciones d ON d.id=u.direccion_id
     LEFT JOIN jefes j ON j.id=t.jefe_id
     ORDER BY t.nombres
-""", conn)
+    """, conn)
     # Datos para alta
     df_area = pd.read_sql("""
         SELECT a.id, a.nombre AS area, u.nombre AS unidad, d.nombre AS direccion
