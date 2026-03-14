@@ -1,4 +1,3 @@
-
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -7,6 +6,47 @@ import hashlib
 import os
 import json
 from typing import Dict, Any
+
+
+# =========================================================
+# AUTO-KEY PATCH (evita StreamlitDuplicateElementId en TODA la app)
+# No cambia tu lógica, solo asegura keys únicos automáticamente.
+# =========================================================
+from functools import wraps
+import inspect
+
+_AUTO_KEY_COUNTER = 0
+
+def _auto_key(widget_name: str) -> str:
+    global _AUTO_KEY_COUNTER
+    _AUTO_KEY_COUNTER += 1
+    frm = inspect.currentframe()
+    lineno = 0
+    try:
+        lineno = frm.f_back.f_back.f_lineno
+    except Exception:
+        lineno = 0
+    return f"auto_{widget_name}_{lineno}_{_AUTO_KEY_COUNTER}"
+
+def _wrap_widget(fn, widget_name: str):
+    @wraps(fn)
+    def _wrapped(*args, **kwargs):
+        if 'key' not in kwargs or kwargs.get('key') is None:
+            kwargs['key'] = _auto_key(widget_name)
+        return fn(*args, **kwargs)
+    return _wrapped
+
+def _patch_container(container, prefix: str):
+    for name in [
+        'text_input','text_area','selectbox','multiselect','radio','checkbox',
+        'date_input','time_input','number_input','slider','button',
+        'download_button','file_uploader','form_submit_button'
+    ]:
+        if hasattr(container, name):
+            setattr(container, name, _wrap_widget(getattr(container, name), f"{prefix}_{name}"))
+
+_patch_container(st, 'st')
+_patch_container(st.sidebar, 'sidebar')
 
 DB_PATH = "vacaciones.db"
 
@@ -480,7 +520,7 @@ connp.close()
 # MENU por permisos
 # =========================================================
 MENU_ALL = [
-    ("Estructura (Direcciones/Unidades/Áreas/Jefes)", "estructura_ver"),
+    ("Organización (Direcciones/Unidades/Áreas/Jefes)", "estructura_ver"),
     ("Trabajadores", "trabajadores_ver"),
     ("Resoluciones", "resoluciones_ver"),
     ("Vacaciones", "vacaciones_ver"),
@@ -503,12 +543,12 @@ st.title("Sistema de Gestión de Vacaciones – DRE Cajamarca")
 # =========================================================
 # 1) ESTRUCTURA (tabs)
 # =========================================================
-if menu == "Estructura (Direcciones/Unidades/Áreas/Jefes)":
+if menu == "Organización (Direcciones/Unidades/Áreas/Jefes)":
     editable = can(PERMS, "estructura_editar")
     conn = get_conn()
-    st.header("Estructura Organizacional")
+    st.header("Organización (Direcciones, Unidades, Áreas y Jefes)")
 
-    tab_reg, tab_edit, tab_del = st.tabs(["➕ Registrar", "📝 Editar", "🗑️ Eliminar"])
+    tab_reg, tab_edit, tab_del, tab_rep = st.tabs(["➕ Registrar", "📝 Editar", "🗑️ Eliminar", "👥 Jefes y sus trabajadores"])
 
     # ---------- Registrar ----------
     with tab_reg:
@@ -680,155 +720,40 @@ if menu == "Estructura (Direcciones/Unidades/Áreas/Jefes)":
                     conn.commit()
                     do_rerun()
 
-    conn.close()
 
-# =========================================================
-# 2) TRABAJADORES (tabs + numero automático)
-# =========================================================
-elif menu == "Trabajadores":
-    editable = can(PERMS, "trabajadores_editar")
-    conn = get_conn()
-    st.header("Trabajadores")
 
-    tab_reg, tab_bus, tab_edit, tab_del = st.tabs(["➕ Registrar", "🔎 Buscar", "📝 Editar", "🗑️ Eliminar"])
+    # ---------- Reporte por jefe ----------
+    with tab_rep:
+        st.subheader("Jefes y su personal")
 
-    # Datos para alta
-    df_area = pd.read_sql("""
-        SELECT a.id, a.nombre AS area, u.nombre AS unidad, d.nombre AS direccion
-        FROM areas a
-        JOIN unidades u ON u.id=a.unidad_id
-        JOIN direcciones d ON d.id=u.direccion_id
-        ORDER BY d.nombre,u.nombre,a.nombre
-    """, conn)
+        df_j = pd.read_sql("""
+            SELECT j.id, j.nombres, j.cargo,
+                   a.nombre AS area, u.nombre AS unidad, d.nombre AS direccion
+            FROM jefes j
+            JOIN areas a ON a.id=j.area_id
+            JOIN unidades u ON u.id=a.unidad_id
+            JOIN direcciones d ON d.id=u.direccion_id
+            ORDER BY j.nombres
+        """, conn)
 
-    df_jef = pd.read_sql("""
-        SELECT j.id, j.nombres, a.nombre AS area, u.nombre AS unidad, d.nombre AS direccion
-        FROM jefes j
-        JOIN areas a ON a.id=j.area_id
-        JOIN unidades u ON u.id=a.unidad_id
-        JOIN direcciones d ON d.id=u.direccion_id
-        ORDER BY d.nombre,u.nombre,a.nombre,j.nombres
-    """, conn)
-
-    # ---------- Registrar ----------
-    with tab_reg:
-        if not editable:
-            st.info("No tienes permiso para registrar.")
-        elif df_area.empty or df_jef.empty:
-            st.warning("Primero registra estructura (Áreas) y Jefes.")
+        if df_j.empty:
+            st.info("No hay jefes registrados.")
         else:
-            mapa_area = {f"{r['direccion']} - {r['unidad']} - {r['area']}": r["id"] for _, r in df_area.iterrows()}
-            mapa_jef = {f"{r['direccion']} - {r['unidad']} - {r['area']} - {r['nombres']}": r["id"] for _, r in df_jef.iterrows()}
+            q = st.text_input("Buscar jefe (nombre/área)")
+            opciones = [f"{r['nombres']} | {r['area']} | ID:{r['id']}" for _, r in df_j.iterrows()]
+            if q:
+                ql = q.lower().strip()
+                opciones = [o for o in opciones if ql in o.lower()]
 
-            num_auto = siguiente_numero_trabajador()
-            st.info(f"N° automático: {num_auto}")
+            sel = st.selectbox("Seleccione jefe", opciones)
+            jefe_id = int(sel.split("ID:")[-1].strip())
 
-            with st.form("reg_trab", clear_on_submit=True):
-                numero = st.text_input("Número", value=num_auto)
-                dni = st.text_input("DNI")
-                nombres = st.text_input("Apellidos y Nombres")
-                cargo = st.text_input("Cargo")
-                regimen = st.selectbox("Régimen", ["DL 276","DL 728","DL 1057","Carrera Especial"])
-                fi = st.date_input("Fecha ingreso")
-                area_sel = st.selectbox("Área", list(mapa_area.keys()))
-                jefe_sel = st.selectbox("Jefe", list(mapa_jef.keys()))
-                if st.form_submit_button("Guardar trabajador"):
-                    if not nombres.strip():
-                        st.error("Nombre obligatorio.")
-                    else:
-                        cur = conn.cursor()
-                        cur.execute("""
-                            INSERT INTO trabajadores(numero,dni,nombres,cargo,regimen,fecha_ingreso,area_id,jefe_id)
-                            VALUES(?,?,?,?,?,?,?,?)
-                        """, (numero.strip(), dni.strip() if dni.strip() else None, nombres.strip(), cargo.strip() if cargo.strip() else None,
-                              regimen, fi.strftime("%Y-%m-%d"), mapa_area[area_sel], mapa_jef[jefe_sel]))
-                        tid = cur.lastrowid
-                        conn.commit()
-                        generar_periodos_para_trabajador(tid, fi.strftime("%Y-%m-%d"))
-                        do_rerun()
-
-    # Base listado
-    df_trab = pd.read_sql("""
-        SELECT t.id,t.numero,t.dni,t.nombres,t.cargo,t.regimen,t.fecha_ingreso,
-               a.nombre AS area,u.nombre AS unidad,d.nombre AS direccion,
-               j.nombres AS jefe
-        FROM trabajadores t
-        JOIN areas a ON a.id=t.area_id
-        JOIN unidades u ON u.id=a.unidad_id
-        JOIN direcciones d ON d.id=u.direccion_id
-        LEFT JOIN jefes j ON j.id=t.jefe_id
-        ORDER BY t.nombres
-    """, conn)
-
-    # ---------- Buscar ----------
-    with tab_bus:
-        col1, col2 = st.columns(2)
-        with col1:
-            qn = st.text_input("Buscar por nombre", key="bus_nom")
-        with col2:
-            qd = st.text_input("Buscar por DNI", key="bus_dni")
-        dfv = df_trab.copy()
-        if qn:
-            dfv = dfv[dfv["nombres"].str.contains(qn, case=False, na=False)]
-        if qd:
-            dfv = dfv[dfv["dni"].fillna("").str.contains(qd, na=False)]
-        st.dataframe(dfv, use_container_width=True)
-
-    # ---------- Editar ----------
-    with tab_edit:
-        if not editable:
-            st.info("No tienes permiso para editar.")
-        elif df_trab.empty:
-            st.info("No hay trabajadores.")
-        else:
-            tid = st.selectbox("Trabajador", df_trab["id"], format_func=lambda x: df_trab[df_trab["id"]==x]["nombres"].values[0])
-            row = conn.execute("SELECT * FROM trabajadores WHERE id=?", (tid,)).fetchone()
-            with st.form("edit_trab"):
-                en_num = st.text_input("Número", value=row["numero"] or "")
-                en_dni = st.text_input("DNI", value=row["dni"] or "")
-                en_nom = st.text_input("Nombres", value=row["nombres"] or "")
-                en_car = st.text_input("Cargo", value=row["cargo"] or "")
-                en_reg = st.text_input("Régimen", value=row["regimen"] or "")
-                en_fi = st.date_input("Fecha ingreso", value=to_date(row["fecha_ingreso"]))
-                if st.form_submit_button("Guardar cambios"):
-                    conn.execute("""
-                        UPDATE trabajadores SET numero=?, dni=?, nombres=?, cargo=?, regimen=?, fecha_ingreso=?
-                        WHERE id=?
-                    """, (en_num.strip(), en_dni.strip() if en_dni.strip() else None, en_nom.strip(), en_car.strip() if en_car.strip() else None,
-                          en_reg.strip(), en_fi.strftime("%Y-%m-%d"), tid))
-                    conn.commit()
-                    generar_periodos_para_trabajador(tid, en_fi.strftime("%Y-%m-%d"))
-                    do_rerun()
-
-            st.divider()
-            st.subheader("Periodos del trabajador")
-            dfp = periodos_trabajador_df(tid)
-            if dfp.empty:
-                st.info("Aún no tiene periodos completos.")
-            else:
-                hoy = datetime.date.today()
-                dfp["dias_restantes"] = 30 - dfp["dias_usados"].astype(int)
-                dfp["estado"] = dfp["acumulable_hasta"].apply(lambda x: "🔴 Vencido" if hoy > to_date(x) else ("🟡 Por vencer" if hoy > (to_date(x) - datetime.timedelta(days=60)) else "🟢 Vigente"))
-                st.dataframe(dfp, use_container_width=True)
-
-    # ---------- Eliminar ----------
-    with tab_del:
-        if not editable:
-            st.info("No tienes permiso para eliminar.")
-        elif df_trab.empty:
-            st.info("No hay trabajadores.")
-        else:
-            st.warning("Eliminar borra periodos, resoluciones detalle y vacaciones del trabajador.")
-            tid2 = st.selectbox("Trabajador a eliminar", df_trab["id"], format_func=lambda x: df_trab[df_trab["id"]==x]["nombres"].values[0], key="del_trab")
-            if st.button("Eliminar trabajador"):
-                conn.execute("DELETE FROM trabajadores WHERE id=?", (tid2,))
-                conn.commit()
-                do_rerun()
-
-    conn.close()
-
-# =========================================================
-# 3) RESOLUCIONES (cabecera + detalle, tabs, multi-trabajador)
+            jefe = df_j[df_j["id"] == jefe_id].iloc[0]
+            st.markdown(f"""**Jefe:** {jefe['nombres']}  
+            **Cargo:** {jefe.get('cargo') or ''}  
+            **Área:** {jefe.get('area') or ''}  
+            **Unidad:** {jefe.get('unidad') or ''}  
+            **Dirección:** {jefe.get('direccion') or ''}""")
 # =========================================================
 elif menu == "Resoluciones":
     editable = can(PERMS, "resoluciones_editar")
