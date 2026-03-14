@@ -1,4 +1,3 @@
-
 import streamlit as st
 import sqlite3
 import pandas as pd
@@ -691,6 +690,20 @@ elif menu == "Trabajadores":
     st.header("Trabajadores")
 
     tab_reg, tab_bus, tab_edit, tab_del = st.tabs(["➕ Registrar", "🔎 Buscar", "📝 Editar", "🗑️ Eliminar"])
+
+
+    # Base listado de trabajadores (VISIBLE PARA TODOS LOS TABS)
+    df_trab = pd.read_sql("""
+        SELECT t.id,t.numero,t.dni,t.nombres,t.cargo,t.regimen,t.fecha_ingreso,
+               a.nombre AS area,u.nombre AS unidad,d.nombre AS direccion,
+               j.nombres AS jefe
+        FROM trabajadores t
+        JOIN areas a ON a.id=t.area_id
+        JOIN unidades u ON u.id=a.unidad_id
+        JOIN direcciones d ON d.id=u.direccion_id
+        LEFT JOIN jefes j ON j.id=t.jefe_id
+        ORDER BY t.nombres
+    """, conn)
 
     # Datos para alta
     df_area = pd.read_sql("""
